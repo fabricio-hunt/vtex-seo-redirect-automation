@@ -179,13 +179,13 @@ class URLRecoveryManager:
         # Since user asked for CSV template format, let's write to exactly that format.
         final_df = out_df[['from', 'to', 'type', 'endDate']]
         
-        # Write to csv
-        final_df.to_csv(output_file, sep=';', index=False)
+        # Write to csv with utf-8-sig so Excel opens it correctly without Â artifacts
+        final_df.to_csv(output_file, sep=';', index=False, encoding='utf-8-sig')
         print(f"Saved {len(final_df)} redirects to {output_file}")
         
         # Write an extended version for review
         review_file = output_file.replace('.csv', '_review.csv')
-        out_df.to_csv(review_file, sep=';', index=False)
+        out_df.to_csv(review_file, sep=';', index=False, encoding='utf-8-sig')
         print(f"Saved detailed review file to {review_file}")
 
 if __name__ == "__main__":
