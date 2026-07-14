@@ -2,7 +2,7 @@ import pandas as pd
 import requests
 import xml.etree.ElementTree as ET
 from urllib.parse import urlparse
-from thefuzz import process, fuzz
+from rapidfuzz import process, fuzz
 import re
 import os
 
@@ -17,6 +17,7 @@ class URLRecoveryManager:
         print(f"Downloading XML feed from {self.xml_url}...")
         response = requests.get(self.xml_url, stream=True)
         response.raise_for_status()
+        response.raw.decode_content = True
         
         # We use iterparse for memory efficiency
         context = ET.iterparse(response.raw, events=("end",))
@@ -54,6 +55,8 @@ class URLRecoveryManager:
         if not url or not isinstance(url, str):
             return ""
         try:
+            # Clean url
+            url = self.clean_text(url)
             path = urlparse(url).path
             parts = path.strip('/').split('/')
             if len(parts) >= 2 and parts[-1] == 'p':
@@ -61,6 +64,16 @@ class URLRecoveryManager:
             return parts[0] if parts else ""
         except:
             return ""
+
+    def clean_text(self, text):
+        from urllib.parse import unquote
+        text = unquote(text)
+        try:
+            if 'Â' in text or 'Ã' in text:
+                text = text.encode('latin1').decode('utf-8')
+        except:
+            pass
+        return text
 
     def is_linx_legacy(self, url):
         """Checks if URL is a legacy Linx URL containing '-p12345'."""
@@ -86,6 +99,7 @@ class URLRecoveryManager:
         
         for index, row in df.iterrows():
             url_404 = str(row[url_col]).strip()
+            url_404 = self.clean_text(url_404)
             
             # Ensure it's a valid URL format for path extraction
             if not url_404.startswith('http'):
@@ -107,11 +121,8 @@ class URLRecoveryManager:
             # Rule 2: Exact Slug Match
             slug_404 = self.extract_slug(url_404)
             if slug_404 in self.slug_to_url:
-                dest_url = self.slug_to_url[slug_404]
+                dest_url = self.clean_text(self.slug_to_url[slug_404])
                 dest_path = urlparse(dest_url).path
-                # Add query params if present in dest_url
-                if urlparse(dest_url).query:
-                    dest_path += '?' + urlparse(dest_url).query
                     
                 results.append({
                     'from': path_404,
@@ -124,12 +135,11 @@ class URLRecoveryManager:
                 
             # Rule 3: Fuzzy Slug Match
             if slug_404 and active_slugs:
-                best_match, score = process.extractOne(slug_404, active_slugs, scorer=fuzz.ratio)
+                match = process.extractOne(slug_404, active_slugs, scorer=fuzz.ratio)
+                best_match, score = match[0], match[1]
                 if score >= threshold:
-                    dest_url = self.slug_to_url[best_match]
+                    dest_url = self.clean_text(self.slug_to_url[best_match])
                     dest_path = urlparse(dest_url).path
-                    if urlparse(dest_url).query:
-                        dest_path += '?' + urlparse(dest_url).query
                         
                     results.append({
                         'from': path_404,

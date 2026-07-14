@@ -65,7 +65,7 @@ def test_process_404_list(tmpdir):
     assert result_df.iloc[1]['to'] == '/smartphone-samsung-galaxy-s23/p'
     
     # Check Fuzzy Match (90% threshold should match smart-tv-lg-55-polegadas)
-    assert result_df.iloc[2]['to'] == '/smart-tv-lg-55-polegadas/p?idsku=999'
+    assert result_df.iloc[2]['to'] == '/smart-tv-lg-55-polegadas/p'
     
     # Check No Match
     assert pd.isna(result_df.iloc[3]['to']) or result_df.iloc[3]['to'] == ''
