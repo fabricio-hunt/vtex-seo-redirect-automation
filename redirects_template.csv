@@ -1,0 +1,4 @@
+from;to;type;endDate
+    /temporary;/;TEMPORARY;
+/temporary-with-date;/;TEMPORARY;2025-01-01T00:00:00.000Z;
+/permanent;/;PERMANENT;

@@ -1,0 +1,6 @@
+pandas<2.3.0
+openpyxl
+thefuzz
+pytest
+requests
+lxml
