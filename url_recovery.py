@@ -68,8 +68,19 @@ class URLRecoveryManager:
     def clean_text(self, text):
         from urllib.parse import unquote
         text = unquote(text)
+        
+        # Explicit replacements for common encoding artifacts (UTF-8 read as Latin-1)
+        replacements = {
+            'Âº': 'º', 'Â°': '°', 'Ã£': 'ã', 'Ã§': 'ç', 'Ã¡': 'á', 
+            'Ã©': 'é', 'Ã­': 'í', 'Ã³': 'ó', 'Ãº': 'ú', 'Ã¢': 'â', 
+            'Ãª': 'ê', 'Ã´': 'ô', 'Ãµ': 'õ', 'Ã': 'í', 'Â': ''
+        }
+        for bad, good in replacements.items():
+            text = text.replace(bad, good)
+            
         try:
-            if 'Â' in text or 'Ã' in text:
+            # Fallback if there are other latin-1 artifacts
+            if 'Ã' in text or 'Â' in text:
                 text = text.encode('latin1').decode('utf-8')
         except:
             pass
