@@ -257,6 +257,11 @@ class URLRecoveryManager:
 
         final_df = out_df.loc[valid_mask, ['from', 'to', 'type', 'endDate']]
         
+        # Ensure output directory exists if path contains one
+        out_dir = os.path.dirname(output_file)
+        if out_dir:
+            os.makedirs(out_dir, exist_ok=True)
+        
         # Write to csv with utf-8-sig so Excel opens it correctly without Â artifacts
         final_df.to_csv(output_file, sep=';', index=False, encoding='utf-8-sig')
         print(f"Saved {len(final_df)} valid redirects (HTTP 200 & no same-URL loop) to {output_file}")
@@ -271,7 +276,11 @@ if __name__ == "__main__":
     manager.download_and_parse_xml()
     
     input_file = "404-gsc/Tabela.csv"
+    output_dir = "output"
+    os.makedirs(output_dir, exist_ok=True)
+    output_file = os.path.join(output_dir, "redirects.csv")
+    
     if os.path.exists(input_file):
-        manager.process_404_list(input_file, "redirects.csv", threshold=90, check_http_status=True)
+        manager.process_404_list(input_file, output_file, threshold=90, check_http_status=True)
     else:
         print(f"Arquivo não encontrado: {input_file}")

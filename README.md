@@ -49,9 +49,9 @@ Place your Google Search Console 404 CSV export in the `404-gsc/` directory (e.g
 python url_recovery.py
 ```
 
-The script will generate:
-- `redirects.csv`: Final VTEX import template (`from;to;type;endDate`) containing only verified HTTP 200 targets.
-- `redirects_review.csv`: Full audit file including match scores, HTTP status codes, and ignored same-URL matches.
+The script will generate the files inside the `output/` directory:
+- `output/redirects.csv`: Final VTEX import template (`from;to;type;endDate`) containing only verified HTTP 200 targets.
+- `output/redirects_review.csv`: Full audit file including match scores, HTTP status codes, and ignored same-URL matches.
 
 ## Testing
 
