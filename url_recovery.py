@@ -5,12 +5,14 @@ from urllib.parse import urlparse
 from rapidfuzz import process, fuzz
 import re
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 class URLRecoveryManager:
     def __init__(self, xml_url="http://www.bemol.com.br/XMLData/googleshopping.xml"):
         self.xml_url = xml_url
         self.active_urls = []
         self.slug_to_url = {}
+        self.url_status_cache = {}
         
     def download_and_parse_xml(self, max_items=None):
         """Downloads the XML feed and extracts active URLs and slugs."""
@@ -93,7 +95,36 @@ class URLRecoveryManager:
         # Matches -p followed by numbers, e.g., -p1086695
         return bool(re.search(r'-p\d+', url))
 
-    def process_404_list(self, input_file, output_file, threshold=90):
+    def is_same_url(self, path1, path2):
+        """Checks if source path and target path point to the exact same URL."""
+        if not path1 or not path2:
+            return False
+        p1 = path1.strip('/').lower()
+        p2 = path2.strip('/').lower()
+        return p1 == p2
+
+    def check_url_status(self, url_path):
+        """Checks HTTP status code for a given URL or path, with caching."""
+        if not url_path:
+            return None
+        if url_path in self.url_status_cache:
+            return self.url_status_cache[url_path]
+            
+        full_url = url_path if url_path.startswith('http') else f"https://www.bemol.com.br{url_path if url_path.startswith('/') else '/' + url_path}"
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        }
+        try:
+            response = requests.get(full_url, headers=headers, stream=True, timeout=10, allow_redirects=True)
+            status = response.status_code
+            response.close()
+        except Exception as e:
+            status = None
+            
+        self.url_status_cache[url_path] = status
+        return status
+
+    def process_404_list(self, input_file, output_file, threshold=90, check_http_status=True):
         """Processes the input Excel/CSV of 404s and outputs the redirects CSV."""
         print(f"Processing 404 file: {input_file}")
         if input_file.endswith('.xlsx'):
@@ -120,13 +151,23 @@ class URLRecoveryManager:
             
             # Rule 1: Linx Legacy (-p12345) -> /superoferta
             if self.is_linx_legacy(path_404):
-                results.append({
-                    'from': path_404,
-                    'to': '/superoferta',
-                    'type': 'PERMANENT',
-                    'endDate': '',
-                    'match_type': 'Legacy_Linx'
-                })
+                dest_path = '/superoferta'
+                if self.is_same_url(path_404, dest_path):
+                    results.append({
+                        'from': path_404,
+                        'to': '',
+                        'type': 'PERMANENT',
+                        'endDate': '',
+                        'match_type': 'Same_URL_Ignored'
+                    })
+                else:
+                    results.append({
+                        'from': path_404,
+                        'to': dest_path,
+                        'type': 'PERMANENT',
+                        'endDate': '',
+                        'match_type': 'Legacy_Linx'
+                    })
                 continue
                 
             # Rule 2: Exact Slug Match
@@ -134,14 +175,23 @@ class URLRecoveryManager:
             if slug_404 in self.slug_to_url:
                 dest_url = self.clean_text(self.slug_to_url[slug_404])
                 dest_path = urlparse(dest_url).path
-                    
-                results.append({
-                    'from': path_404,
-                    'to': dest_path,
-                    'type': 'PERMANENT',
-                    'endDate': '',
-                    'match_type': 'Exact_Slug'
-                })
+                
+                if self.is_same_url(path_404, dest_path):
+                    results.append({
+                        'from': path_404,
+                        'to': '',
+                        'type': 'PERMANENT',
+                        'endDate': '',
+                        'match_type': 'Same_URL_Ignored'
+                    })
+                else:
+                    results.append({
+                        'from': path_404,
+                        'to': dest_path,
+                        'type': 'PERMANENT',
+                        'endDate': '',
+                        'match_type': 'Exact_Slug'
+                    })
                 continue
                 
             # Rule 3: Fuzzy Slug Match
@@ -151,14 +201,23 @@ class URLRecoveryManager:
                 if score >= threshold:
                     dest_url = self.clean_text(self.slug_to_url[best_match])
                     dest_path = urlparse(dest_url).path
-                        
-                    results.append({
-                        'from': path_404,
-                        'to': dest_path,
-                        'type': 'PERMANENT',
-                        'endDate': '',
-                        'match_type': f'Fuzzy_{score}%'
-                    })
+                    
+                    if self.is_same_url(path_404, dest_path):
+                        results.append({
+                            'from': path_404,
+                            'to': '',
+                            'type': 'PERMANENT',
+                            'endDate': '',
+                            'match_type': 'Same_URL_Ignored'
+                        })
+                    else:
+                        results.append({
+                            'from': path_404,
+                            'to': dest_path,
+                            'type': 'PERMANENT',
+                            'endDate': '',
+                            'match_type': f'Fuzzy_{score}%'
+                        })
                     continue
             
             # No match found
@@ -170,18 +229,37 @@ class URLRecoveryManager:
                 'match_type': 'No_Match'
             })
 
+        # Coleta URLs únicas de destino para verificação de status HTTP
+        unique_to_urls = list({r['to'] for r in results if r['to']})
+        if check_http_status and unique_to_urls:
+            print(f"Verificando status HTTP para {len(unique_to_urls)} URLs de destino únicas...")
+            with ThreadPoolExecutor(max_workers=10) as executor:
+                list(executor.map(self.check_url_status, unique_to_urls))
+
+        for r in results:
+            if r['to']:
+                r['status_code'] = self.url_status_cache.get(r['to'], '') if check_http_status else 200
+            else:
+                r['status_code'] = ''
+
         # Save to CSV using the template format (from;to;type;endDate)
         out_df = pd.DataFrame(results)
         
-        # We can drop the match_type for the final CSV if we want strictly the template, 
-        # but it's very useful for review. Let's keep it as an extra column for human review.
-        # The system (VTEX) will likely ignore extra columns or we can split it into a "review" file.
-        # Since user asked for CSV template format, let's write to exactly that format.
-        final_df = out_df[['from', 'to', 'type', 'endDate']]
+        # Apenas URLs com destino preenchido, que não sejam DE -> PARA para a mesma URL, 
+        # e com status HTTP 200 (se verificação ativada)
+        valid_mask = (
+            (out_df['to'] != '') & 
+            (out_df['to'].notna()) & 
+            (out_df['match_type'] != 'Same_URL_Ignored')
+        )
+        if check_http_status:
+            valid_mask = valid_mask & (out_df['status_code'].astype(str) == '200')
+
+        final_df = out_df.loc[valid_mask, ['from', 'to', 'type', 'endDate']]
         
         # Write to csv with utf-8-sig so Excel opens it correctly without Â artifacts
         final_df.to_csv(output_file, sep=';', index=False, encoding='utf-8-sig')
-        print(f"Saved {len(final_df)} redirects to {output_file}")
+        print(f"Saved {len(final_df)} valid redirects (HTTP 200 & no same-URL loop) to {output_file}")
         
         # Write an extended version for review
         review_file = output_file.replace('.csv', '_review.csv')
@@ -191,5 +269,9 @@ class URLRecoveryManager:
 if __name__ == "__main__":
     manager = URLRecoveryManager()
     manager.download_and_parse_xml()
-    # Replace with the actual Excel file name
-    manager.process_404_list("https___www.bemol.com.br_-Coverage-Drilldown-2026-07-14.xlsx", "redirects.csv", threshold=90)
+    
+    input_file = "404-gsc/Tabela.csv"
+    if os.path.exists(input_file):
+        manager.process_404_list(input_file, "redirects.csv", threshold=90, check_http_status=True)
+    else:
+        print(f"Arquivo não encontrado: {input_file}")
