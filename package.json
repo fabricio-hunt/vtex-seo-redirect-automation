@@ -1,5 +1,5 @@
 {
-  "name": "redirect-recovery-web",
+  "name": "vtex-seo-redirect-automation",
   "version": "1.0.0",
   "description": "Upload UI, job runner and history for the 404 URL recovery tool.",
   "private": true,

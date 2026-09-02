@@ -37,8 +37,8 @@ The matching pipeline is genuinely slow (a ~38MB feed download, fuzzy-matching h
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/fabricio-hunt/automated-404-url-recovery-for-vtex.git
-   cd automated-404-url-recovery-for-vtex
+   git clone https://github.com/fabricio-hunt/vtex-seo-redirect-automation.git
+   cd vtex-seo-redirect-automation
    ```
 2. Create and activate a virtual environment:
    ```bash
