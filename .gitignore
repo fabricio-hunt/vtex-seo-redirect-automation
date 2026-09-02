@@ -6,3 +6,18 @@ __pycache__/
 *.xlsx
 temp*
 .pytest_cache/
+
+# Node / Next.js
+node_modules/
+.next/
+next-env.d.ts
+.vercel/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local secrets
+.env.local
+.env*.local
+
+# Local-dev storage fallback (lib/localStore.ts) — stands in for Blob/Redis
+.local-data/
