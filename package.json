@@ -1,0 +1,25 @@
+{
+  "name": "redirect-recovery-web",
+  "version": "1.0.0",
+  "description": "Upload UI, job runner and history for the 404 URL recovery tool.",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start"
+  },
+  "license": "UNLICENSED",
+  "dependencies": {
+    "@upstash/redis": "^1.38.3",
+    "@vercel/blob": "^2.8.0",
+    "next": "^16.3.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "typescript": "^5.9.3"
+  }
+}
