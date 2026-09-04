@@ -56,14 +56,26 @@ interface KvFile {
 async function readKv(): Promise<KvFile> {
   try {
     return JSON.parse(await fs.readFile(KV_FILE, "utf8"));
-  } catch {
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      // A missing file is expected on first run; anything else (e.g. corrupt JSON) means
+      // every job record just became invisible, so this needs to be loud, not silent.
+      console.error(`[localStore] Failed to read/parse ${KV_FILE}, treating as empty:`, error);
+    }
     return { strings: {}, sortedSets: {} };
   }
 }
 
 async function writeKv(data: KvFile): Promise<void> {
   await fs.mkdir(ROOT, { recursive: true });
-  await fs.writeFile(KV_FILE, JSON.stringify(data, null, 2));
+  // Write-then-rename instead of writing KV_FILE in place: a rename is atomic at the
+  // filesystem level, so a reader never observes a partially-written file. Writing in place
+  // was getting corrupted in practice — this project directory is synced by OneDrive, which
+  // can grab the file mid-write (job-progress polling rewrites this file many times a
+  // second while a job runs), leaving a truncated/zero-padded kv.json behind.
+  const tmpFile = `${KV_FILE}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tmpFile, JSON.stringify(data, null, 2));
+  await fs.rename(tmpFile, KV_FILE);
 }
 
 export async function localKvSet(key: string, value: unknown): Promise<void> {
