@@ -14,7 +14,9 @@ def build_result_frames(results: list, check_http_status: bool):
     """Splits raw match results into (final_df, review_df). final_df keeps only rows with
     a non-empty destination, that aren't a same-URL loop, that score at least
     MIN_MATCH_SCORE (enforced here regardless of the fuzzy `threshold` a caller used), and
-    (if enabled) that returned HTTP 200."""
+    (if enabled) that returned HTTP 200. Different 404 URLs can normalize to the same `from`
+    path (e.g. two GSC-reported variants of the same broken URL), so final_df also keeps only
+    the first rule for each `from` — VTEX's import rejects a duplicate `from` outright."""
     out_df = pd.DataFrame(results)
 
     valid_mask = (
@@ -26,7 +28,7 @@ def build_result_frames(results: list, check_http_status: bool):
     if check_http_status:
         valid_mask = valid_mask & (out_df["status_code"].astype(str) == "200")
 
-    final_df = out_df.loc[valid_mask, OUTPUT_COLUMNS]
+    final_df = out_df.loc[valid_mask, OUTPUT_COLUMNS].drop_duplicates(subset=["from"], keep="first")
     return final_df, out_df
 
 

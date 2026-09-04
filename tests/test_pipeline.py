@@ -165,6 +165,26 @@ def test_requesting_a_threshold_below_the_floor_still_enforces_min_match_score(t
     assert len(final_df) == 0
 
 
+def test_final_csv_drops_duplicate_from_rows(tmpdir):
+    """Two 404 URLs that normalize to the same `from` path (e.g. one with a tracking query
+    string) must only produce one row in the final CSV — VTEX's import rejects a duplicate
+    `from` outright, so shipping both would guarantee at least one import failure."""
+    input_file = _write_csv(tmpdir, [
+        "https://www.bemol.com.br/produto-antigo-p444",
+        "https://www.bemol.com.br/produto-antigo-p444?utm_source=google",
+    ])
+    output_file = str(tmpdir.join("output.csv"))
+
+    process_404_list(input_file, output_file, config=RecoveryConfig(check_http_status=False), feed=SAMPLE_FEED)
+
+    final_df = pd.read_csv(output_file, sep=";")
+    assert len(final_df) == 1
+    assert final_df.iloc[0]["from"] == "/produto-antigo-p444"
+
+    review_df = pd.read_csv(output_file.replace(".csv", "_review.csv"), sep=";")
+    assert len(review_df) == 2  # both rows are still visible in the audit trail
+
+
 def test_fuzzy_match_rejects_different_product_variants():
     """Slugs that are textually close but disagree on a model/size/storage number must not
     be fuzzy-matched to each other (e.g. a 50" TV redirected to a 55" TV)."""
