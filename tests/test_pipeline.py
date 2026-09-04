@@ -2,11 +2,12 @@ import os
 
 import pandas as pd
 
-from core.config import RecoveryConfig
+from core.config import MIN_MATCH_SCORE, RecoveryConfig
 from core.feed import FeedIndex
 from core.pipeline import (
     finalize_job,
     job_progress,
+    match_row,
     process_404_list,
     start_job,
     step_http_check_batch,
@@ -134,3 +135,47 @@ def test_stepped_http_check_advances_through_both_phases():
     final_df, _ = finalize_job(state, config)
     assert len(final_df) == 3
     assert job_progress(state)["urls_checked"] == 3
+
+
+def test_match_row_attaches_match_score_per_match_type():
+    assert match_row(SAMPLE_URLS[0], SAMPLE_FEED, RecoveryConfig())["match_score"] == 100  # Legacy_Linx
+    assert match_row(SAMPLE_URLS[1], SAMPLE_FEED, RecoveryConfig())["match_score"] == 100  # Exact_Slug
+    fuzzy = match_row(SAMPLE_URLS[2], SAMPLE_FEED, RecoveryConfig())
+    assert fuzzy["match_type"].startswith("Fuzzy_")
+    assert fuzzy["match_score"] >= MIN_MATCH_SCORE
+    assert match_row(SAMPLE_URLS[3], SAMPLE_FEED, RecoveryConfig())["match_score"] == 0  # No_Match
+
+
+def test_requesting_a_threshold_below_the_floor_still_enforces_min_match_score(tmpdir):
+    """Even a caller asking for a very permissive threshold cannot get a low-confidence
+    match into the final diagnostic — RecoveryConfig clamps it, and build_result_frames
+    double-checks match_score as a second line of defense."""
+    feed = FeedIndex(
+        active_urls=["https://www.bemol.com.br/produto-completamente-diferente/p"],
+        slug_to_url={"produto-completamente-diferente": "https://www.bemol.com.br/produto-completamente-diferente/p"},
+    )
+    config = RecoveryConfig(threshold=0, check_http_status=False)
+    assert config.threshold == MIN_MATCH_SCORE  # clamped on construction
+
+    input_file = _write_csv(tmpdir, ["https://www.bemol.com.br/algo-sem-relacao/p"])
+    output_file = str(tmpdir.join("output.csv"))
+    process_404_list(input_file, output_file, config=config, feed=feed)
+
+    final_df = pd.read_csv(output_file, sep=";")
+    assert len(final_df) == 0
+
+
+def test_fuzzy_match_rejects_different_product_variants():
+    """Slugs that are textually close but disagree on a model/size/storage number must not
+    be fuzzy-matched to each other (e.g. a 50" TV redirected to a 55" TV)."""
+    feed = FeedIndex(
+        active_urls=["https://www.bemol.com.br/smart-tv-lg-55-polegadas/p"],
+        slug_to_url={"smart-tv-lg-55-polegadas": "https://www.bemol.com.br/smart-tv-lg-55-polegadas/p"},
+    )
+    config = RecoveryConfig(check_http_status=False)
+
+    result = match_row("https://www.bemol.com.br/smart-tv-lg-50-polegadas/p", feed, config)
+
+    assert result["match_type"] == "No_Match"
+    assert result["to"] == ""
+    assert result["match_score"] == 0

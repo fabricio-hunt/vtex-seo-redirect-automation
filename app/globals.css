@@ -103,6 +103,12 @@ label {
   margin-bottom: 16px;
 }
 
+.hint {
+  color: var(--text-dim);
+  margin: 6px 0 0;
+  font-size: 12px;
+}
+
 input[type="text"],
 input[type="number"],
 input[type="password"],

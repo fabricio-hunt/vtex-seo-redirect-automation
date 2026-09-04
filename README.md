@@ -8,7 +8,8 @@ The **Automated 404 URL Recovery for VTEX** is a specialized tool designed to in
 
 - **Legacy Linx Rule**: Automatically detects legacy URLs containing `-p12345` and redirects them to the `/superoferta` landing page.
 - **Exact Slug Matching**: Extracts slugs from 404 URLs and strictly matches them to the live active slugs from the Google Shopping feed.
-- **Fuzzy Text Matching**: Uses advanced string similarity algorithms (Levenshtein Distance) to find the closest active product when the URL structure has slightly changed, employing a strict `90%` similarity threshold to ensure high accuracy.
+- **Fuzzy Text Matching**: Uses advanced string similarity algorithms (Levenshtein Distance) to find the closest active product when the URL structure has slightly changed, employing a default `90%` similarity threshold to ensure high accuracy. Candidates whose slugs disagree on a numeric token (model number, screen size, storage, etc.) are rejected even if the text is otherwise very similar, e.g. `smart-tv-lg-50-polegadas` is never matched to `smart-tv-lg-55-polegadas`.
+- **Minimum Accuracy Floor**: No match — regardless of type (Legacy/Exact/Fuzzy) — reaches the final diagnostic below a `match_score` of `80%`. This floor is enforced server-side (`core/config.MIN_MATCH_SCORE`) and cannot be lowered by the `--threshold` CLI flag or the web UI.
 - **Infinite Loop Prevention**: Automatically detects if a source URL maps to the exact same destination path (`from == to`) and prevents same-URL redirects (`Same_URL_Ignored`), avoiding `ERR_TOO_MANY_REDIRECTS` redirect loops.
 - **HTTP 200 Verification**: Concurrently checks the HTTP status code of destination URLs and filters the final export so that **only valid HTTP 200 destinations** are included in the VTEX redirect file.
 - **CSV Output Generation**: Exports the redirect mappings conforming to the VTEX platform template format (`from;to;type;endDate`), ready for immediate import, alongside a detailed review audit file (`_review.csv`).
@@ -17,9 +18,9 @@ The **Automated 404 URL Recovery for VTEX** is a specialized tool designed to in
 
 1. **Feed Ingestion**: The script downloads and parses the latest `googleshopping.xml` feed, extracting all active URLs and isolating product slugs.
 2. **404 List Processing**: Reads broken URL reports (Excel/CSV format) located in the `404-gsc/` folder (defaulting to `404-gsc/Tabela.csv`).
-3. **Smart Matching Engine**: Applies the matching rules sequentially: Legacy Check -> Exact Match -> Fuzzy Match (≥ 90%), while ensuring no URL redirects to itself.
+3. **Smart Matching Engine**: Applies the matching rules sequentially: Legacy Check -> Exact Match -> Fuzzy Match (≥ threshold, floor 80%), while ensuring no URL redirects to itself.
 4. **HTTP Status Verification**: Uses multithreaded requests (`ThreadPoolExecutor`) to verify that each matched destination URL returns an HTTP 200 status code.
-5. **Export**: Generates `redirects.csv` containing only verified HTTP 200 redirects for VTEX, and `redirects_review.csv` with full diagnostics (`match_type` and `status_code`) for SEO audit.
+5. **Export**: Generates `redirects.csv` containing only verified HTTP 200 redirects that scored at least `MIN_MATCH_SCORE` (80%) for VTEX, and `redirects_review.csv` with full diagnostics (`match_type`, `match_score`, and `status_code`) for SEO audit.
 
 ## Project layout
 

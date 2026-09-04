@@ -9,7 +9,7 @@ from .config import RecoveryConfig
 from .export import build_result_frames, write_outputs
 from .feed import FeedIndex, download_and_parse_xml, extract_slug
 from .http_check import check_urls_batch
-from .matching import is_linx_legacy, is_same_url
+from .matching import is_linx_legacy, is_same_product_variant, is_same_url
 from .text_utils import clean_text
 
 logger = logging.getLogger(__name__)
@@ -27,36 +27,47 @@ def load_input_urls(input_file: str) -> list:
 
 def match_row(url_404: str, feed: FeedIndex, config: RecoveryConfig) -> dict:
     """Applies the matching rules (Legacy Linx -> Exact Slug -> Fuzzy Slug) to a single 404 URL.
-    Does not perform HTTP verification; `status_code` is filled in afterwards."""
+    Does not perform HTTP verification; `status_code` is filled in afterwards.
+
+    Every result carries a `match_score` (0-100) so the export layer can enforce a single,
+    consistent accuracy floor (`RecoveryConfig.MIN_MATCH_SCORE`) across all match types,
+    and a self-redirect (`from` == `to`) never reaches the final diagnostic."""
     url_404 = clean_text(str(url_404).strip())
     if not url_404.startswith("http"):
         url_404 = config.base_domain + (url_404 if url_404.startswith("/") else "/" + url_404)
     path_404 = urlparse(url_404).path
 
-    def _result(dest_path: str, match_type: str) -> dict:
+    def _result(dest_path: str, match_type: str, score: int) -> dict:
         if dest_path and is_same_url(path_404, dest_path):
-            return {"from": path_404, "to": "", "type": "PERMANENT", "endDate": "", "match_type": "Same_URL_Ignored"}
-        return {"from": path_404, "to": dest_path, "type": "PERMANENT", "endDate": "", "match_type": match_type}
+            return {
+                "from": path_404, "to": "", "type": "PERMANENT", "endDate": "",
+                "match_type": "Same_URL_Ignored", "match_score": score,
+            }
+        return {
+            "from": path_404, "to": dest_path, "type": "PERMANENT", "endDate": "",
+            "match_type": match_type, "match_score": score,
+        }
 
     if is_linx_legacy(path_404):
-        return _result(config.legacy_redirect, "Legacy_Linx")
+        return _result(config.legacy_redirect, "Legacy_Linx", 100)
 
     slug_404 = extract_slug(url_404)
     if slug_404 in feed.slug_to_url:
         dest_path = urlparse(clean_text(feed.slug_to_url[slug_404])).path
-        return _result(dest_path, "Exact_Slug")
+        return _result(dest_path, "Exact_Slug", 100)
 
     if slug_404 and feed.slug_to_url:
         from rapidfuzz import fuzz, process
 
         match = process.extractOne(slug_404, list(feed.slug_to_url.keys()), scorer=fuzz.ratio)
         if match is not None:
-            best_match, score = match[0], match[1]
-            if score >= config.threshold:
+            best_match, score = match[0], round(match[1])
+            # config.threshold is already clamped to >= MIN_MATCH_SCORE (see RecoveryConfig).
+            if score >= config.threshold and is_same_product_variant(slug_404, best_match):
                 dest_path = urlparse(clean_text(feed.slug_to_url[best_match])).path
-                return _result(dest_path, f"Fuzzy_{score}%")
+                return _result(dest_path, f"Fuzzy_{score}%", score)
 
-    return {"from": path_404, "to": "", "type": "PERMANENT", "endDate": "", "match_type": "No_Match"}
+    return {"from": path_404, "to": "", "type": "PERMANENT", "endDate": "", "match_type": "No_Match", "match_score": 0}
 
 
 def process_404_list(input_file: str, output_file: str, config: RecoveryConfig = None, feed: FeedIndex = None):

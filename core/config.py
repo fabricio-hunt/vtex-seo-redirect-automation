@@ -8,6 +8,10 @@ DEFAULT_USER_AGENT = (
     "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 )
 
+# Hard floor for match confidence: no row is allowed into the final diagnostic below this
+# score, no matter what fuzzy `threshold` a caller (CLI flag, web UI, API payload) requests.
+MIN_MATCH_SCORE = 80
+
 
 @dataclass
 class RecoveryConfig:
@@ -21,6 +25,11 @@ class RecoveryConfig:
     max_workers: int = 10
     http_timeout: int = 10
     user_agent: str = DEFAULT_USER_AGENT
+
+    def __post_init__(self) -> None:
+        # Never let a caller-supplied threshold weaken the accuracy floor.
+        if self.threshold < MIN_MATCH_SCORE:
+            self.threshold = MIN_MATCH_SCORE
 
     def to_dict(self) -> dict:
         return {

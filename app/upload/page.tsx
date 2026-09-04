@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
-import { DEFAULT_CONFIG } from "@/lib/types";
+import { DEFAULT_CONFIG, MIN_MATCH_SCORE } from "@/lib/types";
 
 export default function UploadPage() {
   const router = useRouter();
@@ -73,15 +73,19 @@ export default function UploadPage() {
         </div>
 
         <div className="field">
-          <label htmlFor="threshold">Limiar de similaridade para fuzzy match (0-100)</label>
+          <label htmlFor="threshold">Limiar de similaridade para fuzzy match ({MIN_MATCH_SCORE}-100)</label>
           <input
             id="threshold"
             type="number"
-            min={0}
+            min={MIN_MATCH_SCORE}
             max={100}
             value={threshold}
-            onChange={(e) => setThreshold(Number(e.target.value))}
+            onChange={(e) => setThreshold(Math.max(MIN_MATCH_SCORE, Number(e.target.value)))}
           />
+          <p className="hint">
+            Por precisão, nenhuma URL entra no diagnóstico final com menos de {MIN_MATCH_SCORE}% de similaridade,
+            mesmo que um valor menor seja informado aqui.
+          </p>
         </div>
 
         <div className="field">

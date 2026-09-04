@@ -3,6 +3,8 @@ import os
 
 import pandas as pd
 
+from .config import MIN_MATCH_SCORE
+
 logger = logging.getLogger(__name__)
 
 OUTPUT_COLUMNS = ["from", "to", "type", "endDate"]
@@ -10,13 +12,16 @@ OUTPUT_COLUMNS = ["from", "to", "type", "endDate"]
 
 def build_result_frames(results: list, check_http_status: bool):
     """Splits raw match results into (final_df, review_df). final_df keeps only rows with
-    a non-empty destination, that aren't a same-URL loop, and (if enabled) that returned HTTP 200."""
+    a non-empty destination, that aren't a same-URL loop, that score at least
+    MIN_MATCH_SCORE (enforced here regardless of the fuzzy `threshold` a caller used), and
+    (if enabled) that returned HTTP 200."""
     out_df = pd.DataFrame(results)
 
     valid_mask = (
         (out_df["to"] != "")
         & (out_df["to"].notna())
         & (out_df["match_type"] != "Same_URL_Ignored")
+        & (out_df["match_score"].fillna(0) >= MIN_MATCH_SCORE)
     )
     if check_http_status:
         valid_mask = valid_mask & (out_df["status_code"].astype(str) == "200")

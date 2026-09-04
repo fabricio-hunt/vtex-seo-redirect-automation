@@ -1,3 +1,8 @@
+/** Hard floor for match confidence, mirrored from core/config.py MIN_MATCH_SCORE. The Python
+ * pipeline enforces this server-side regardless of what a client sends, so this constant is
+ * only used to keep the upload form from suggesting a weaker threshold is possible. */
+export const MIN_MATCH_SCORE = 80;
+
 export interface RecoveryConfig {
   xml_url: string;
   base_domain: string;
@@ -41,6 +46,7 @@ export interface JobState {
     type: string;
     endDate: string;
     match_type: string;
+    match_score?: number;
     status_code?: string | number;
   }>;
   unique_to_urls: string[];
