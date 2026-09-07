@@ -15,7 +15,9 @@ import base64
 import io
 import logging
 import os
+import subprocess
 import tempfile
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -37,6 +39,27 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="404 URL Recovery — compute API")
 
+# Captured once at process import time, not per-request. `--reload` has been observed to log
+# "Reloading..." without actually respawning the worker (see KNOWN_ISSUES.md #2) — comparing
+# these values across two /api/health calls is the fastest way to confirm a reload actually
+# happened, without inspecting the process list.
+_WORKER_STARTED_AT = datetime.now(timezone.utc).isoformat()
+_WORKER_PID = os.getpid()
+
+
+def _git_commit() -> Optional[str]:
+    try:
+        return (
+            subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], stderr=subprocess.DEVNULL)
+            .decode()
+            .strip()
+        )
+    except Exception:  # noqa: BLE001 - best-effort only, e.g. not a git checkout
+        return None
+
+
+_WORKER_GIT_COMMIT = _git_commit()
+
 
 def require_internal_token(x_internal_token: Optional[str] = Header(default=None)) -> None:
     """These endpoints do real network I/O against production infra (the feed, live URLs)
@@ -52,7 +75,12 @@ def require_internal_token(x_internal_token: Optional[str] = Header(default=None
 
 @app.get("/api/health")
 def health() -> dict:
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "pid": _WORKER_PID,
+        "started_at": _WORKER_STARTED_AT,
+        "git_commit": _WORKER_GIT_COMMIT,
+    }
 
 
 # --- request/response payloads -------------------------------------------------
