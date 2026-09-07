@@ -4,3 +4,5 @@ rapidfuzz
 pytest
 requests
 fastapi
+uvicorn
+watchfiles
