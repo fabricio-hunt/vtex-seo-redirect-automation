@@ -27,8 +27,24 @@ function localBaseUrl(): string {
 
 // --- blob-like file storage ---------------------------------------------
 
+/**
+ * Resolves `pathname` inside BLOB_DIR and rejects anything that would escape it
+ * (e.g. `../../etc/passwd`). `path.join`/`path.resolve` silently collapse `..`
+ * segments, so this containment check is required before touching the filesystem —
+ * `pathname` reaches here from the public `/backend/local-files/[...path]` route,
+ * which is not behind login (see proxy.ts).
+ */
+function resolveBlobPath(pathname: string): string {
+  const root = path.resolve(BLOB_DIR) + path.sep;
+  const filePath = path.resolve(BLOB_DIR, pathname);
+  if (!filePath.startsWith(root)) {
+    throw new Error(`Refusing to access path outside blob storage: ${pathname}`);
+  }
+  return filePath;
+}
+
 export async function localBlobPut(pathname: string, data: Buffer | string, contentType = "application/octet-stream"): Promise<string> {
-  const filePath = path.join(BLOB_DIR, pathname);
+  const filePath = resolveBlobPath(pathname);
   await fs.mkdir(path.dirname(filePath), { recursive: true });
   await fs.writeFile(filePath, data);
   await fs.writeFile(`${filePath}.contenttype`, contentType);
@@ -36,7 +52,12 @@ export async function localBlobPut(pathname: string, data: Buffer | string, cont
 }
 
 export async function localBlobGet(pathname: string): Promise<{ data: Buffer; contentType: string } | null> {
-  const filePath = path.join(BLOB_DIR, pathname);
+  let filePath: string;
+  try {
+    filePath = resolveBlobPath(pathname);
+  } catch {
+    return null;
+  }
   try {
     const data = await fs.readFile(filePath);
     const contentType = await fs.readFile(`${filePath}.contenttype`, "utf8").catch(() => "application/octet-stream");
