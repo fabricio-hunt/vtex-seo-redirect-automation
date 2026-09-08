@@ -1,111 +1,185 @@
 # Automated 404 URL Recovery for VTEX
 
-## Overview
+Internal tool that maps broken (404) URLs to active product pages by cross-referencing legacy URLs against a live Google Shopping XML feed, and generates VTEX-ready `301` redirect files. Built to reduce Google Search Console crawl errors and recover lost SEO equity after catalog/URL restructures.
 
-The **Automated 404 URL Recovery for VTEX** is a specialized tool designed to intelligently map broken (404) URLs to active product pages by cross-referencing legacy URLs with a live Google Shopping XML feed. This project significantly improves SEO performance, reduces crawl errors in Google Search Console, and enhances user experience by automatically generating `301 Moved Permanently` redirects.
+## Contents
 
-## Features
+- [Architecture](#architecture)
+- [Tech stack](#tech-stack)
+- [Matching engine](#matching-engine)
+- [Project layout](#project-layout)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Deploying to Vercel](#deploying-to-vercel)
+- [Testing](#testing)
+- [Continuous integration](#continuous-integration)
+- [Known limitations](#known-limitations)
 
-- **Legacy Linx Rule**: Automatically detects legacy URLs containing `-p12345` and redirects them to the `/superoferta` landing page.
-- **Exact Slug Matching**: Extracts slugs from 404 URLs and strictly matches them to the live active slugs from the Google Shopping feed.
-- **Fuzzy Text Matching**: Uses advanced string similarity algorithms (Levenshtein Distance) to find the closest active product when the URL structure has slightly changed, employing a default `90%` similarity threshold to ensure high accuracy. Candidates whose slugs disagree on a numeric token (model number, screen size, storage, etc.) are rejected even if the text is otherwise very similar, e.g. `smart-tv-lg-50-polegadas` is never matched to `smart-tv-lg-55-polegadas`.
-- **Minimum Accuracy Floor**: No match — regardless of type (Legacy/Exact/Fuzzy) — reaches the final diagnostic below a `match_score` of `80%`. This floor is enforced server-side (`core/config.MIN_MATCH_SCORE`) and cannot be lowered by the `--threshold` CLI flag or the web UI.
-- **Infinite Loop Prevention**: Automatically detects if a source URL maps to the exact same destination path (`from == to`) and prevents same-URL redirects (`Same_URL_Ignored`), avoiding `ERR_TOO_MANY_REDIRECTS` redirect loops.
-- **HTTP 200 Verification**: Concurrently checks the HTTP status code of destination URLs and filters the final export so that **only valid HTTP 200 destinations** are included in the VTEX redirect file.
-- **CSV Output Generation**: Exports the redirect mappings conforming to the VTEX platform template format (`from;to;type;endDate`), ready for immediate import, alongside a detailed review audit file (`_review.csv`).
+## Architecture
 
-## How It Works
+The matching pipeline (feed download, fuzzy matching hundreds of rows, HTTP-checking hundreds of destination URLs) routinely runs far longer than a single serverless invocation should — especially on Vercel's Hobby plan, which caps function duration well below what a full run needs. Rather than run one long job, the system is split into a **stateless compute layer** and a **stateful orchestrator**:
 
-1. **Feed Ingestion**: The script downloads and parses the latest `googleshopping.xml` feed, extracting all active URLs and isolating product slugs.
-2. **404 List Processing**: Reads broken URL reports (Excel/CSV format) located in the `404-gsc/` folder (defaulting to `404-gsc/Tabela.csv`).
-3. **Smart Matching Engine**: Applies the matching rules sequentially: Legacy Check -> Exact Match -> Fuzzy Match (≥ threshold, floor 80%), while ensuring no URL redirects to itself.
-4. **HTTP Status Verification**: Uses multithreaded requests (`ThreadPoolExecutor`) to verify that each matched destination URL returns an HTTP 200 status code.
-5. **Export**: Generates `redirects.csv` containing only verified HTTP 200 redirects that scored at least `MIN_MATCH_SCORE` (80%) for VTEX, and `redirects_review.csv` with full diagnostics (`match_type`, `match_score`, and `status_code`) for SEO audit.
+```mermaid
+flowchart LR
+    Browser["Browser<br/>(upload / job page)"]
+
+    subgraph Vercel["Vercel deployment (one project, one domain)"]
+        direction LR
+        NextJS["Next.js app<br/>app/*, lib/*<br/>— routing (proxy.ts), persistence, orchestration"]
+        FastAPI["FastAPI function<br/>api/index.py<br/>— stateless compute: parse feed, match batch,<br/>HTTP-check batch, finalize CSVs"]
+        NextJS -- "POST /api/compute/*<br/>(X-Internal-Token)" --> FastAPI
+    end
+
+    Blob[("Vercel Blob<br/>uploaded files, result CSVs,<br/>cached feed JSON")]
+    Redis[("Upstash Redis<br/>job records, feed-cache pointer")]
+    Feed["Google Shopping XML feed<br/>(external, ~38MB)"]
+    VTEX["Destination product pages<br/>(HTTP 200 verification)"]
+
+    Browser -- "login, upload, poll progress" --> NextJS
+    NextJS <--> Blob
+    NextJS <--> Redis
+    FastAPI -- "download & parse" --> Feed
+    FastAPI -- "verify status" --> VTEX
+```
+
+- **`api/index.py` (compute layer)** holds no state. Every request carries the current `JobState` as JSON; every response carries the updated one. It does the CPU/network-bound work: parsing the ~38MB feed, fuzzy-matching a batch of rows, checking a batch of destination URLs, building the final CSVs.
+- **`app/` + `lib/` (orchestrator)** is what the browser actually talks to. It owns persistence (Vercel Blob for uploaded files and result CSVs, Upstash Redis for job records) and drives the compute layer forward one bounded batch at a time via `POST /backend/jobs/:id/advance`, called repeatedly by the browser while a job page is open.
+- **`proxy.ts`** gates every Next.js page/route behind a shared-password session cookie. It does **not** cover `api/index.py` — that function is reachable directly, so its endpoints are instead protected by a shared-secret header (`X-Internal-Token`, checked against `INTERNAL_API_TOKEN`) that only the Next.js backend knows.
+
+This is a deliberate trade-off: two runtimes in one repo, coordinated over HTTP, instead of one long-running process — to fit within serverless invocation limits without needing a queue or a separate long-lived worker.
+
+## Tech stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Frontend | Next.js 16 (App Router), React 19, TypeScript | Upload form, job progress page, run history |
+| Frontend styling | Hand-written CSS (design tokens in `app/globals.css`) | No CSS framework dependency |
+| Backend orchestration | Next.js Route Handlers (`app/backend/*`) | Auth, job lifecycle, calls into the compute layer |
+| Compute | Python 3.12, FastAPI (ASGI) | Stateless matching/HTTP-check/export steps |
+| Matching | `rapidfuzz`, `pandas`, custom rules (`core/matching.py`) | Legacy/exact/fuzzy slug matching with a numeric-token guard |
+| File storage | Vercel Blob (`@vercel/blob`) | Uploaded spreadsheets, result CSVs, cached feed JSON |
+| Job state | Upstash Redis (`@upstash/redis`) | Job records, run history index, feed-cache pointer |
+| Auth | Custom cookie session (`lib/session.ts`) + `proxy.ts` middleware | Single shared password, no user accounts |
+| Local dev storage | File-based stand-in (`lib/localStore.ts`) | Runs the full flow with zero cloud setup via `LOCAL_DEV_STORAGE=true` |
+| Testing | `pytest` (Python), `next build` (TypeScript type-checking) | See [Testing](#testing) |
+| CI | GitHub Actions (`.github/workflows/ci.yml`) | Runs both test suites on every push/PR |
+| Hosting | Vercel (Next.js + Python Functions, single deployment) | See [Deploying to Vercel](#deploying-to-vercel) |
+
+There is no database beyond the two managed Vercel integrations above, no message queue, and no container orchestration — the whole system is two serverless runtimes plus two managed storage services, sized for the actual load (occasional, human-triggered batch jobs, not continuous traffic).
+
+## Matching engine
+
+- **Legacy rule**: URLs containing `-p12345`-style legacy product IDs redirect to `/superoferta`.
+- **Exact slug match**: slugs extracted from 404 URLs are matched 1:1 against active slugs from the feed.
+- **Fuzzy match**: Levenshtein-based similarity (`rapidfuzz`) against active slugs, default `90%` threshold. Candidates whose slugs disagree on a numeric token (model number, screen size, storage, etc.) are rejected even when the text is otherwise near-identical — `smart-tv-lg-50-polegadas` never matches `smart-tv-lg-55-polegadas`.
+- **Minimum accuracy floor**: no match — of any type — reaches the final export below `match_score = 80`. Enforced server-side (`core/config.MIN_MATCH_SCORE`); the CLI `--threshold` flag and the web UI's threshold field cannot lower it.
+- **Same-URL loop prevention**: a match where `from == to` is flagged `Same_URL_Ignored` and excluded, avoiding `ERR_TOO_MANY_REDIRECTS`.
+- **HTTP 200 verification**: destination URLs are checked concurrently (`ThreadPoolExecutor` locally / batched in the API); only verified `200` destinations reach the final VTEX import file.
+- **Output**: `redirects.csv` (VTEX import format — `from;to;type;endDate`) with only verified matches, plus `redirects_review.csv` with full diagnostics (`match_type`, `match_score`, `status_code`) for SEO audit.
 
 ## Project layout
 
-- `core/` — the matching engine, as a plain Python package with no web/CLI concerns: `config.py` (tunable `RecoveryConfig`), `feed.py` (feed download/parsing), `text_utils.py` (encoding fixes), `matching.py` (the 3 matching rules), `http_check.py` (HTTP 200 verification), `export.py` (CSV output), and `pipeline.py` (orchestration — both a one-shot `process_404_list` and a resumable, batched version used by the web job runner).
-- `cli.py` — command-line entry point (replaces the old `url_recovery.py` script).
-- `api/index.py` — a stateless FastAPI function wrapping `core/` in small, JSON-in/JSON-out compute steps (parse the feed, match a batch of rows, check a batch of URLs, finalize). It holds no state itself; the Next.js backend below calls it repeatedly and persists the result. Deployed as a Vercel Python serverless function, sibling to the Next.js app (Vercel auto-detects `api/*.py`).
-- `app/`, `lib/`, `proxy.ts` — the Next.js app: upload/progress/history pages, plus route handlers under `app/backend/*` that own persistence (Vercel Blob for files/results, Upstash Redis for job records) and orchestrate calls to `api/index.py`. `proxy.ts` gates every page/route behind a shared-password login.
-- `tests/` — pytest suite covering `core/` and `api/`.
+```text
+core/               Matching engine — plain Python, no web/CLI concerns
+├── config.py           RecoveryConfig, MIN_MATCH_SCORE
+├── feed.py              feed download/parsing
+├── text_utils.py         encoding fixes (nested percent-encoding, etc.)
+├── matching.py            legacy / exact / fuzzy rules
+├── http_check.py           HTTP 200 verification
+├── export.py                 CSV output
+└── pipeline.py                orchestration: one-shot + resumable/batched
 
-### Why two backends?
+api/index.py         Stateless FastAPI compute function (see Architecture)
+cli.py              Standalone one-shot CLI entrypoint over core/
+app/                Next.js app: upload / job / history pages
+├── backend/            Route handlers: auth, job lifecycle, orchestration
+└── globals.css           Design tokens + component styles
 
-The matching pipeline is genuinely slow (a ~38MB feed download, fuzzy-matching hundreds of rows, checking HTTP status of hundreds of destination URLs) — far longer than a single serverless function invocation should run, especially on Vercel's Hobby plan. So the work is split: `api/index.py` does one bounded chunk of computation per call and returns immediately; the Next.js backend is what remembers where a job is and keeps calling `api/index.py` until it's done, via `POST /backend/jobs/:id/advance` (called repeatedly by the browser while a job page is open).
+lib/                Next.js backend support
+├── blob.ts             Vercel Blob wrapper (+ local-dev fallback)
+├── kv.ts                 Upstash Redis wrapper (+ local-dev fallback)
+├── localStore.ts           File-based Blob/Redis stand-in for local dev
+├── pythonCompute.ts          Client for api/index.py
+├── feedCache.ts                Feed parse-result caching
+└── session.ts                   Login session cookie
+
+proxy.ts            Next.js middleware — gates all pages/routes behind login
+tests/              pytest suite covering core/ and api/
+```
 
 ## Installation
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/fabricio-hunt/vtex-seo-redirect-automation.git
-   cd vtex-seo-redirect-automation
-   ```
-2. Create and activate a virtual environment:
-   ```bash
-   python -m venv venv
-   # On Windows:
-   .\venv\Scripts\activate
-   # On Linux/Mac:
-   source venv/bin/activate
-   ```
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+```bash
+git clone https://github.com/fabricio-hunt/vtex-seo-redirect-automation.git
+cd vtex-seo-redirect-automation
+
+python -m venv .venv
+# Windows: .venv\Scripts\activate   |   Linux/Mac: source .venv/bin/activate
+pip install -r requirements.txt
+
+npm install
+```
+
+The Python runtime is pinned to **3.12** via `.python-version` (matching Vercel's default) — recreate the virtualenv on 3.12 if your local interpreter differs.
 
 ## Usage
 
-### CLI
+### Web UI (primary interface)
 
-Place your Google Search Console 404 CSV export in the `404-gsc/` directory (e.g., `404-gsc/Tabela.csv`) and run:
-
-```bash
-python cli.py
-```
-
-Parameters that used to be hardcoded are now flags — run `python cli.py --help` for the full list (`--input`, `--output-dir`, `--xml-url`, `--threshold`, `--no-http-check`, `--max-workers`).
-
-The script will generate the files inside the `output/` directory:
-- `output/redirects.csv`: Final VTEX import template (`from;to;type;endDate`) containing only verified HTTP 200 targets.
-- `output/redirects_review.csv`: Full audit file including match scores, HTTP status codes, and ignored same-URL matches.
-
-### Web
-
-A web UI for uploading a spreadsheet and running a recovery job, with live progress and run history, lives under `app/` (Next.js) + `api/index.py` (FastAPI).
-
-#### Local development
-
-You need both processes running:
+Two processes, both required for local development:
 
 ```bash
 # Terminal 1 — Python compute function
-pip install -r requirements.txt
 uvicorn api.index:app --reload --port 8000
 
 # Terminal 2 — Next.js app
-npm install
 npm run dev
 ```
 
-Copy `.env.example` to `.env.local` and fill in `APP_PASSWORD`, `SESSION_SECRET`, and `INTERNAL_API_TOKEN` (any random strings for local dev — e.g. `openssl rand -hex 32`). `PYTHON_API_BASE_URL=http://localhost:8000` (already the default) points the Next.js backend at the local FastAPI process.
+Copy `.env.example` to `.env.local` and fill in `APP_PASSWORD`, `SESSION_SECRET`, and `INTERNAL_API_TOKEN` (any random strings for local dev, e.g. `openssl rand -hex 32`). `PYTHON_API_BASE_URL=http://localhost:8000` (already the default) points the Next.js backend at the local FastAPI process.
 
-**Testing without real Vercel Blob / Upstash Redis:** set `LOCAL_DEV_STORAGE=true` in `.env.local`. Uploaded files, job records and the feed cache are then written to `.local-data/` on disk (`lib/localStore.ts`) instead of calling the real cloud services, so the full upload → progress → download → history flow works with zero cloud setup. **Never set this in a real deployment** — on Vercel each request can land on a different, ephemeral container, so anything written this way would vanish between steps of the same job. Switch it back to `false` (or unset it) once you've provisioned real Blob/Redis and want to test against them.
+**Testing without real Vercel Blob / Upstash Redis:** set `LOCAL_DEV_STORAGE=true` in `.env.local`. Uploaded files, job records, and the feed cache are then written to `.local-data/` on disk (`lib/localStore.ts`) instead of calling the real cloud services, so the full upload → progress → download → history flow works with zero cloud setup. **Never set this in a real deployment** — on Vercel each request can land on a different, ephemeral container, so anything written this way vanishes between steps of the same job. Unset it once real Blob/Redis are provisioned.
 
-#### Deploying to Vercel
+> `uvicorn --reload` has a known issue when the process is started by a coding agent on Windows (no attached console for `CTRL_C_EVENT` → the worker silently keeps serving old code after a "Reloading..." log line). See `KNOWN_ISSUES.md` for the confirmed root cause and workaround.
 
-1. Push this repo to GitHub/GitLab/Bitbucket and import it in the Vercel dashboard (or `vercel` CLI). Root Directory should be the repo root — it contains both the Next.js app (`app/`, `package.json`) and the Python function (`api/index.py`), which Vercel deploys side by side with no extra config.
+### CLI (one-shot, no web UI)
+
+```bash
+python cli.py --input 404-gsc/Tabela.csv --output-dir output
+```
+
+Run `python cli.py --help` for the full flag list (`--xml-url`, `--threshold`, `--no-http-check`, `--max-workers`). Writes `output/redirects.csv` and `output/redirects_review.csv`.
+
+## Deploying to Vercel
+
+1. Push to GitHub/GitLab/Bitbucket and import the repo in the Vercel dashboard (or `vercel deploy`). Root Directory stays the repo root — it contains both the Next.js app (`app/`, `package.json`) and the Python function (`api/index.py`).
 2. **Storage** (Project → Storage):
-   - Add a **Blob** store and connect it to the project → sets `BLOB_READ_WRITE_TOKEN` automatically.
+   - Add a **Blob** store and connect it → sets `BLOB_READ_WRITE_TOKEN` automatically.
    - Add **Upstash for Redis** (Marketplace integration) and connect it → sets `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` automatically.
-3. **Environment variables** (Project → Settings → Environment Variables), generate each with e.g. `openssl rand -hex 32`:
+3. **Environment variables** (Project → Settings → Environment Variables), each generated with e.g. `openssl rand -hex 32`:
    - `APP_PASSWORD` — the shared login password.
    - `SESSION_SECRET` — signs the login cookie.
-   - `INTERNAL_API_TOKEN` — shared secret the Next.js backend sends to `api/index.py`. This matters: Python functions are *not* covered by `proxy.ts`, so without this check `api/index.py` would be reachable by anyone with the deployment URL.
-4. Deploy. Check the Function logs for both the Next.js routes and `api/index.py` after your first real run.
-5. **Verify the timeout budget for your plan.** This was built assuming the Hobby plan's short per-invocation timeout, so `app/backend/jobs/[id]/advance/route.ts` processes work in small batches (150 rows / 60 URLs per call) rather than all at once. Confirm in the Vercel dashboard what `maxDuration` your plan actually allows (declared as 60s in `vercel.json` / `export const maxDuration`, but plans cap this differently) and shrink the batch sizes in `advance/route.ts` if a call is timing out — most likely candidate is the very first `parse-feed` call for a fresh feed cache, since it downloads the full ~38MB feed in one shot.
+   - `INTERNAL_API_TOKEN` — shared secret the Next.js backend sends to `api/index.py`. This matters: `api/index.py` is *not* covered by `proxy.ts`, so without this check it would be reachable by anyone with the deployment URL.
+4. Deploy, then confirm `GET /api/health` returns `{"status": "ok", ...}` before trusting the deployment — see the routing note below.
+5. **Check the timeout budget for your plan.** Built assuming the Hobby plan's short per-invocation limit, so `app/backend/jobs/[id]/advance/route.ts` processes work in small batches (150 rows / 60 URLs per call) rather than all at once. `vercel.json` declares `maxDuration: 60` for `api/index.py`, but your plan may cap this lower — the most likely call to time out is the very first `parse-feed`, which downloads the full ~38MB feed in one shot.
 
-#### A note on result file access
+### Why `vercel.json` needs an explicit routing rule
+
+This project has **two** things at the repo root that could each be a Vercel "framework": the Next.js app (`package.json`) and the Python function (`api/index.py`). Vercel resolves this as a Next.js project with an auxiliary file-based Python function, **not** as Vercel's zero-config FastAPI preset — that preset only auto-routes every `/api/*` sub-path to a single function when Python *is* the project's root framework. Here, file-based routing applies instead, and by itself it maps `api/index.py` to the single literal path `/api` — not to `/api/health`, `/api/compute/match-batch`, or any of the other sub-paths the FastAPI app actually defines and that `lib/pythonCompute.ts` calls.
+
+Without a routing rule, those sub-path requests 404 at Vercel's edge before ever reaching FastAPI — while working perfectly in local dev, since running `uvicorn api.index:app` directly lets FastAPI's own router see every request. `vercel.json` closes that gap explicitly:
+
+```json
+{
+  "routes": [{ "src": "/api/(.*)", "dest": "api/index.py" }]
+}
+```
+
+This forwards the full original request (path included) to the function, letting FastAPI's own router match `/api/health`, `/api/compute/*`, etc. as declared in `api/index.py`. `vercel.json` also excludes files the compute function never reads at runtime (`app/`, `tests/`, `node_modules/`, tracked `.csv`/`.xml`/`.xlsx` fixtures) from its bundle via `excludeFiles`, since Python functions on Vercel bundle everything reachable at build time with no automatic tree-shaking.
+
+**This routing fix has not been exercised against a live Vercel deployment yet** — verify with a preview deploy and a direct request to `/api/health` and `/api/compute/load-input` before relying on it in production.
+
+### A note on result file access
 
 Downloaded CSVs (`redirects.csv`, `review.csv`) and the cached feed are stored in Vercel Blob with public, unguessable URLs. The app itself is gated by login, but anyone who obtains one of those exact URLs (e.g. from logs) could fetch that one file without logging in. Acceptable for an internal tool, but worth knowing.
 
@@ -114,14 +188,19 @@ Downloaded CSVs (`redirects.csv`, `review.csv`) and the cached feed are stored i
 - **Python** (`core/` matching logic + `api/index.py` compute endpoints): `pytest tests/`.
 - **Web** (`app/`, `lib/`): `npm run build` — Next.js type-checks the whole app as part of the production build; there's no separate `tsc --noEmit` step needed.
 
-## Continuous Integration
+## Continuous integration
 
-A GitHub Actions workflow (`.github/workflows/ci.yml`) runs both of the above — the `pytest` suite and the Next.js build — on every `push` and `pull_request` to `main`/`master`.
+`.github/workflows/ci.yml` runs both suites above — `pytest` (on Python 3.12, matching Vercel's default) and the Next.js build — on every push/PR to `main`/`master`.
+
+## Known limitations
+
+Tracked in detail in `KNOWN_ISSUES.md`; the current open items:
+
+- End-to-end confirmation that the latest matching fixes reduce real VTEX import failures is still pending a fresh production run.
+- `localBlobPut()` in `lib/localStore.ts` (local-dev job CSVs) isn't yet written atomically, unlike `kv.json` — a small residual risk under OneDrive-synced project directories.
+- The `vercel.json` routing fix described above has not been verified against an actual Vercel deployment.
 
 ## Notes
 
 - `AGENTS.md` / `CLAUDE.md` at the repo root are auto-generated by `next dev` (Next.js 16 writes agent-facing notes about its own breaking changes) — regenerated on every dev run, safe to ignore or commit.
-
-## Contribution & Trust
-
-Built for VTEX store administrators and technical SEO specialists who need a reliable, data-driven approach to URL recovery. Contributions are welcome!
+- This is an internal tool (`"license": "UNLICENSED"` in `package.json`) built for VTEX store administrators and technical SEO specialists at Bemol — not published or licensed for external use.

@@ -1,7 +1,11 @@
 {
   "functions": {
     "api/index.py": {
-      "maxDuration": 60
+      "maxDuration": 60,
+      "excludeFiles": "{tests/**,app/**,.next/**,node_modules/**,.venv/**,venv/**,.github/**,output/**,404-gsc/**,.local-data/**,__pycache__/**,.pytest_cache/**,*.xlsx,*.xml,*.csv,*.tsbuildinfo}"
     }
-  }
+  },
+  "routes": [
+    { "src": "/api/(.*)", "dest": "api/index.py" }
+  ]
 }
