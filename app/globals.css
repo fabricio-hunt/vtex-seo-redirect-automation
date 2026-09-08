@@ -51,9 +51,20 @@ code,
   font-family: var(--font-jetbrains-mono), Menlo, Consolas, monospace;
 }
 
+/* --- Starfield background -------------------------------------------------- */
+
+.starfield-background {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+}
+
 /* --- App shell: topbar + sidebar + main --------------------------------- */
 
 .app-shell {
+  position: relative;
+  z-index: 1;
   min-height: 100vh;
 }
 

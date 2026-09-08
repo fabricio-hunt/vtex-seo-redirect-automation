@@ -3,6 +3,7 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import Link from "next/link";
 import { LogoutButton } from "./LogoutButton";
 import { Sidebar } from "./Sidebar";
+import { StarfieldBackground } from "./StarfieldBackground";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="pt-BR" className={`${inter.variable} ${jetbrainsMono.variable}`}>
       <body>
+        <StarfieldBackground />
         <div className="app-shell">
           <header className="topbar">
             <div className="topbar-breadcrumb">
