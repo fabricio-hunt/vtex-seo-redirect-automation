@@ -1,7 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isValidSessionCookieValue, SESSION_COOKIE_NAME } from "@/lib/session";
 
-const PUBLIC_PATHS = new Set(["/login", "/backend/auth/login"]);
+// Icons are served by Next.js at these literal paths (app/icon.tsx, app/apple-icon.tsx)
+// and must render for anyone, including on the (unauthenticated) /login page — browsers
+// request them without a session cookie.
+const PUBLIC_PATHS = new Set(["/login", "/backend/auth/login", "/icon", "/apple-icon"]);
 // Stand-in for Vercel Blob's own public-URL files (lib/localStore.ts, local dev only):
 // server-side fetches to these (e.g. the feed cache read in lib/feedCache.ts) don't carry
 // the session cookie, same as a real Blob URL wouldn't need one.
