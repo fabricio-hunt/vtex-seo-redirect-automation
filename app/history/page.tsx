@@ -45,7 +45,7 @@ export default function HistoryPage() {
             {jobs.map((job) => (
               <tr key={job.id}>
                 <td>{new Date(job.createdAt).toLocaleString("pt-BR")}</td>
-                <td>{job.filename}</td>
+                <td className="mono">{job.filename}</td>
                 <td>
                   <span className={`phase-badge ${job.status === "done" ? "done" : job.status === "error" ? "error" : ""}`}>
                     {STATUS_LABELS[job.status]}

@@ -85,7 +85,7 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
 
   return (
     <div className="card">
-      <h1>{job.filename}</h1>
+      <h1 className="mono">{job.filename}</h1>
       <p className="subtitle">
         Iniciado em {new Date(job.createdAt).toLocaleString("pt-BR")} · <span className={`phase-badge ${badgeClass}`}>{job.status === "error" ? "Erro" : PHASE_LABELS[progress.phase]}</span>
       </p>
@@ -125,7 +125,7 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
             <tbody>
               {Object.entries(progress.match_type_breakdown).map(([type, count]) => (
                 <tr key={type}>
-                  <td>{type}</td>
+                  <td className="mono">{type}</td>
                   <td>{count}</td>
                 </tr>
               ))}
