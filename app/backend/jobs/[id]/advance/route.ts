@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { uploadJobResult } from "@/lib/blob";
-import { getSlugToUrl } from "@/lib/feedCache";
+import { getFeedSnapshot } from "@/lib/feedCache";
 import { getJob, saveJob } from "@/lib/kv";
 import { computeProgress } from "@/lib/progress";
 import { finalize as finalizeCompute, httpCheckBatch, matchBatch } from "@/lib/pythonCompute";
@@ -24,8 +24,8 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
   try {
     if (job.state.phase === "matching") {
-      const slugToUrl = await getSlugToUrl(job.config.xml_url);
-      const { state } = await matchBatch(job.state, slugToUrl, job.config, MATCH_BATCH_SIZE);
+      const feedSnapshot = await getFeedSnapshot(job.config.xml_url);
+      const { state } = await matchBatch(job.state, feedSnapshot, job.config, MATCH_BATCH_SIZE);
       job.state = state;
     } else if (job.state.phase === "http_check") {
       const { state } = await httpCheckBatch(job.state, job.config, HTTP_CHECK_BATCH_SIZE);

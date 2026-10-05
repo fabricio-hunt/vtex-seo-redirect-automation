@@ -57,12 +57,12 @@ def test_load_input_rejects_unparseable_file(client):
     assert response.status_code == 400
 
 
-def test_match_batch_and_finalize_round_trip(client):
-    feed = {
-        "slug_to_url": {
-            "produto-ativo": "https://www.bemol.com.br/produto-ativo/p",
-        }
-    }
+def test_match_batch_and_finalize_round_trip(client, monkeypatch):
+    import api.index
+
+    snapshot_url = "https://blob.example.com/feed-cache/slug-to-url.json"
+    feed = api.index.FeedIndex(slug_to_url={"produto-ativo": "https://www.bemol.com.br/produto-ativo/p"})
+    monkeypatch.setattr(api.index, "_load_feed_snapshot", lambda url, version: feed if url == snapshot_url else None)
     state = {
         "phase": "matching",
         "rows": ["https://www.bemol.com.br/produto-ativo/p", "https://www.bemol.com.br/produto-sumido/p"],
@@ -76,7 +76,12 @@ def test_match_batch_and_finalize_round_trip(client):
 
     response = client.post(
         "/api/compute/match-batch",
-        json={"state": state, "feed": feed, "config": config, "batch_size": 10},
+        json={
+            "state": state,
+            "feed_snapshot": {"url": snapshot_url, "version": 1},
+            "config": config,
+            "batch_size": 10,
+        },
         headers=auth_headers(),
     )
     assert response.status_code == 200
@@ -94,6 +99,19 @@ def test_match_batch_and_finalize_round_trip(client):
     assert payload["stats"]["rows_total"] == 2
     assert payload["stats"]["valid_redirects"] == 0
     assert payload["redirects_csv"].startswith("﻿")
+
+
+def test_match_batch_rejects_non_http_feed_snapshot_url(client):
+    response = client.post(
+        "/api/compute/match-batch",
+        json={
+            "state": {"phase": "matching", "rows": ["a"]},
+            "feed_snapshot": {"url": "file:///etc/passwd", "version": 1},
+            "config": {},
+        },
+        headers=auth_headers(),
+    )
+    assert response.status_code == 400
 
 
 def test_finalize_rejects_unfinished_job(client):

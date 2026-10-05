@@ -18,9 +18,12 @@ import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
+from functools import lru_cache
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 import pandas as pd
+import requests
 from fastapi import Depends, FastAPI, Header, HTTPException
 
 from core.config import RecoveryConfig
@@ -93,6 +96,34 @@ def _state_from_payload(data: Dict[str, Any]) -> JobState:
     return JobState.from_dict(data)
 
 
+FEED_SNAPSHOT_TIMEOUT_SECONDS = 30
+
+
+@lru_cache(maxsize=2)
+def _load_feed_snapshot(url: str, version: int) -> FeedIndex:
+    """Downloads the slug -> URL snapshot the Next.js backend cached in Blob.
+
+    The snapshot is fetched here instead of being sent in the request body because it is
+    several MB and Vercel Functions reject bodies above 4.5 MB. Memoized per (url, version)
+    so a reused Fluid Compute instance downloads it once per feed refresh, not per batch;
+    `version` is part of the key because the local-dev store reuses the same URL."""
+    del version  # only part of the cache key
+    response = requests.get(url, timeout=FEED_SNAPSHOT_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    return FeedIndex(slug_to_url=response.json())
+
+
+def _feed_from_payload(data: Dict[str, Any]) -> FeedIndex:
+    url = str(data.get("url", ""))
+    if urlparse(url).scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="feed_snapshot.url must be an http(s) URL.")
+    try:
+        return _load_feed_snapshot(url, int(data.get("version", 0)))
+    except requests.RequestException as exc:
+        logger.error("Failed to download feed snapshot from %s: %s", url, exc)
+        raise HTTPException(status_code=502, detail=f"Falha ao baixar o cache do feed: {exc}") from exc
+
+
 # --- endpoints -------------------------------------------------------------
 
 @app.post("/api/compute/load-input", dependencies=[Depends(require_internal_token)])
@@ -135,9 +166,9 @@ def parse_feed(payload: Dict[str, Any]) -> dict:
 
 @app.post("/api/compute/match-batch", dependencies=[Depends(require_internal_token)])
 def match_batch(payload: Dict[str, Any]) -> dict:
-    """Matches up to `batch_size` pending rows against the feed."""
+    """Matches up to `batch_size` pending rows against the feed snapshot at `feed_snapshot.url`."""
     state = _state_from_payload(payload["state"])
-    feed = FeedIndex(slug_to_url=payload["feed"]["slug_to_url"])
+    feed = _feed_from_payload(payload["feed_snapshot"])
     config = _config_from_payload(payload.get("config"))
     batch_size = int(payload.get("batch_size", 100))
 

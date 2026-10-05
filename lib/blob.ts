@@ -42,11 +42,3 @@ export async function uploadFeedCache(slugToUrl: Record<string, string>): Promis
   const blob = await put(pathname, json, { access: "public", addRandomSuffix: true, contentType: "application/json" });
   return blob.url;
 }
-
-export async function fetchJson<T>(url: string): Promise<T> {
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch ${url}: ${response.status}`);
-  }
-  return (await response.json()) as T;
-}

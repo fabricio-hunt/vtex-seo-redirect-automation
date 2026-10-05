@@ -1,3 +1,4 @@
+import type { FeedCachePointer } from "./kv";
 import type { JobProgress, JobState, RecoveryConfig } from "./types";
 
 /**
@@ -63,11 +64,16 @@ export async function parseFeed(xmlUrl: string): Promise<{ slug_to_url: Record<s
 
 export async function matchBatch(
   state: JobState,
-  slugToUrl: Record<string, string>,
+  feedSnapshot: FeedCachePointer,
   config: RecoveryConfig,
   batchSize = 150,
 ): Promise<{ state: JobState; progress: JobProgress }> {
-  return callCompute("/api/compute/match-batch", { state, feed: { slug_to_url: slugToUrl }, config, batch_size: batchSize });
+  return callCompute("/api/compute/match-batch", {
+    state,
+    feed_snapshot: { url: feedSnapshot.blobUrl, version: feedSnapshot.cachedAt },
+    config,
+    batch_size: batchSize,
+  });
 }
 
 export async function httpCheckBatch(
