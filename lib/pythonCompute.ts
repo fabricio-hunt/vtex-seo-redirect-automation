@@ -30,21 +30,37 @@ function deploymentProtectionHeaders(): Record<string, string> {
   return bypassSecret ? { "x-vercel-protection-bypass": bypassSecret } : {};
 }
 
+/**
+ * Kept below the calling routes' `maxDuration` (60s): if the compute call hangs, the route
+ * still gets to record the failure and answer with JSON, instead of being killed by the
+ * platform and returning Vercel's plain-text error page to the browser.
+ */
+const COMPUTE_TIMEOUT_MS = 50_000;
+
 async function callCompute<T>(path: string, body: unknown): Promise<T> {
   const token = process.env.INTERNAL_API_TOKEN;
   if (!token) {
     throw new Error("INTERNAL_API_TOKEN is not configured on the server.");
   }
 
-  const response = await fetch(`${pythonApiBase()}${path}`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-internal-token": token,
-      ...deploymentProtectionHeaders(),
-    },
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${pythonApiBase()}${path}`, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-internal-token": token,
+        ...deploymentProtectionHeaders(),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(COMPUTE_TIMEOUT_MS),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "TimeoutError") {
+      throw new Error(`Compute call ${path} timed out after ${COMPUTE_TIMEOUT_MS / 1000}s.`);
+    }
+    throw error;
+  }
 
   if (!response.ok) {
     const detail = await response.text().catch(() => "");

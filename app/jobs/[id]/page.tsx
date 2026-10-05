@@ -9,6 +9,20 @@ const PHASE_LABELS: Record<string, string> = {
   done: "Concluído",
 };
 
+/**
+ * Parses a backend response as JSON. When the platform itself answers (e.g. a function
+ * killed for exceeding its max duration), the body is a plain-text error page, so surface
+ * the status and the start of that text instead of a JSON syntax error.
+ */
+async function readJson<T>(response: Response): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`O servidor respondeu ${response.status} sem JSON: ${text.slice(0, 200)}`);
+  }
+}
+
 function ProgressBar({ current, total }: { current: number; total: number }) {
   const pct = total > 0 ? Math.min(100, Math.round((current / total) * 100)) : 0;
   return (
@@ -29,14 +43,14 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
 
     async function fetchDetail() {
       const response = await fetch(`/backend/jobs/${id}`, { cache: "no-store" });
-      const data = await response.json();
+      const data = await readJson<JobDetailResponse & { error?: string }>(response);
       if (!response.ok) throw new Error(data.error ?? "Falha ao carregar o job.");
       return data as JobDetailResponse;
     }
 
     async function advanceOnce() {
       const response = await fetch(`/backend/jobs/${id}/advance`, { method: "POST" });
-      const data = await response.json();
+      const data = await readJson<{ status: string; error?: string }>(response);
       if (!response.ok && response.status !== 500) throw new Error(data.error ?? "Falha ao processar.");
       return data as { status: string; error?: string };
     }
