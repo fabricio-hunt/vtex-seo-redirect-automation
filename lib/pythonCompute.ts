@@ -8,10 +8,25 @@ import type { JobProgress, JobState, RecoveryConfig } from "./types";
  * proxies both under the same local origin.
  */
 
+/**
+ * In production, call through the project's production domain: per-deployment
+ * URLs (VERCEL_URL) sit behind Vercel Deployment Protection and reject this
+ * unauthenticated server-to-server call with 401. Preview deployments only have
+ * a protected URL, so they rely on the automation bypass header below.
+ */
 function pythonApiBase(): string {
   if (process.env.PYTHON_API_BASE_URL) return process.env.PYTHON_API_BASE_URL;
+  if (process.env.VERCEL_ENV === "production" && process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
+  }
   if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
   return "http://localhost:8000";
+}
+
+/** Set automatically once "Protection Bypass for Automation" is enabled on the project. */
+function deploymentProtectionHeaders(): Record<string, string> {
+  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+  return bypassSecret ? { "x-vercel-protection-bypass": bypassSecret } : {};
 }
 
 async function callCompute<T>(path: string, body: unknown): Promise<T> {
@@ -25,6 +40,7 @@ async function callCompute<T>(path: string, body: unknown): Promise<T> {
     headers: {
       "content-type": "application/json",
       "x-internal-token": token,
+      ...deploymentProtectionHeaders(),
     },
     body: JSON.stringify(body),
   });
