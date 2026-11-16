@@ -41,10 +41,10 @@ the same way — plausible it isn't, since it has a real console.
 - Added `pid`, `started_at` (UTC ISO timestamp captured at import time), and `git_commit` to
   `GET /api/health` (`api/index.py`) — one curl call now proves whether a worker is stale,
   no process-inspection needed.
-- `watchfiles` and `uvicorn` were added to `requirements.txt` (both were only present in the
-  ad-hoc `.venv`, not pinned — `pip install -r requirements.txt` alone could not run the local
-  server before this). `watchfiles` did **not** fix the underlying issue but is a strictly
-  better reload backend than `StatReload` when reload *does* work, so kept.
+- `uvicorn` was added to `requirements.txt`. (`watchfiles` was tried as a reload backend, did
+  **not** fix the underlying issue, and was dropped once the launcher stopped using `--reload`.)
+- `scripts/start-local.mjs` now starts uvicorn **without** `--reload`; restart the launcher
+  after editing `core/` or `api/`.
 - **Whenever Claude Code (or another agent) starts the local `uvicorn` server:** treat
   `--reload` as decorative. After any edit under `core/` or `api/`, manually find the PID
   listening on the port (`netstat -ano | grep LISTENING | grep :8000`), `taskkill //PID <pid> //T //F`,
@@ -55,23 +55,21 @@ the same way — plausible it isn't, since it has a real console.
   further fix is needed there — only agent-started servers need the manual-restart workflow
   above.
 
-## 3. OneDrive-synced project directory is a standing corruption risk
+## 3. OneDrive-synced project directory is a standing corruption risk (MITIGATED, 2026-10-07)
 
-The project lives under `OneDrive - BEMOL S A\Documentos\...`. This already caused one
-confirmed `.local-data/kv.json` corruption (valid JSON + ~1MB NUL padding + truncated tail),
-attributed to OneDrive grabbing the file mid-write during frequent job-progress polling.
+The project lives in a OneDrive-synced folder. This already caused one confirmed
+`.local-data/kv.json` corruption (valid JSON + ~1MB NUL padding + truncated tail).
 
-Fixed for `kv.json` via write-to-temp-then-rename in `lib/localStore.ts`.
+All local writes are now atomic (write to a temp file, then rename): `kv.json` and every job
+file in `lib/localStore.ts`, and the feed cache in `core/feed_cache.py`.
 
-**Not yet fixed:** `localBlobPut()` in the same file (`lib/localStore.ts`) still writes job
-CSVs and content-type sidecar files directly with `fs.writeFile()`, not atomically. These
-files are written once per job phase rather than polled continuously, so the risk is lower,
-but the same OneDrive-sync interference is theoretically possible.
+On 2026-10-07 both `.venv/` (empty `pytest` package, pandas C extensions missing, broken
+`pip`) and `node_modules/` (empty `next/dist/bin/`) were also found with missing files,
+consistent with the same sync interference. `node_modules/` was reinstalled with `npm ci`;
+`.venv/` must be recreated (`python -m venv .venv && pip install -r requirements.txt`).
 
-**Next step:** either apply the same temp-then-rename pattern to `localBlobPut()`, or
-consider excluding `.local-data/` from OneDrive sync (a `.onedrive-exclude` marker or moving
-local dev storage outside the synced folder via an env-configurable root) to remove the root
-cause entirely instead of mitigating it file-by-file.
+**Recommended:** set `LOCAL_DATA_DIR` to a folder outside OneDrive sync, and keep the
+virtualenv / `node_modules` excluded from sync (or move the project out of the synced folder).
 
 ## 4. Possible duplicate job activity from multiple browser tabs
 

@@ -6,7 +6,6 @@ export const MIN_MATCH_SCORE = 80;
 export interface RecoveryConfig {
   xml_url: string;
   base_domain: string;
-  legacy_redirect: string;
   threshold: number;
   check_http_status: boolean;
   max_workers: number;
@@ -17,7 +16,6 @@ export interface RecoveryConfig {
 export const DEFAULT_CONFIG: RecoveryConfig = {
   xml_url: "http://www.bemol.com.br/XMLData/googleshopping.xml",
   base_domain: "https://www.bemol.com.br",
-  legacy_redirect: "/superoferta",
   threshold: 90,
   check_http_status: true,
   max_workers: 10,
@@ -56,6 +54,11 @@ export interface JobState {
 
 export type JobStatus = "running" | "done" | "error";
 
+export interface JobResultFiles {
+  redirects: string;
+  review: string;
+}
+
 export interface JobStats {
   rows_total: number;
   valid_redirects: number;
@@ -70,10 +73,10 @@ export interface JobRecord {
   status: JobStatus;
   state: JobState;
   error?: string;
-  resultUrls?: {
-    redirects: string;
-    review: string;
-  };
+  /** Set once the feed has been downloaded (or found fresh in the cache) for this job. */
+  feedPreparedAt?: string;
+  /** Local storage pathnames of the result CSVs (see lib/blob.ts). */
+  resultFiles?: JobResultFiles;
   stats?: JobStats;
 }
 
@@ -94,7 +97,7 @@ export interface JobSummary {
   config: RecoveryConfig;
   status: JobStatus;
   error?: string;
-  resultUrls?: { redirects: string; review: string };
+  resultFiles?: JobResultFiles;
   stats?: JobStats;
 }
 

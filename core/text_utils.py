@@ -31,6 +31,8 @@ def clean_text(text: str) -> str:
     for bad, good in _MOJIBAKE_REPLACEMENTS.items():
         text = text.replace(bad, good)
 
+    text = text.replace("\xa0", " ")
+
     if "Ã" in text or "Â" in text:
         try:
             text = text.encode("latin1").decode("utf-8")

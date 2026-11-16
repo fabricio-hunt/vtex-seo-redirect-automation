@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import Link from "next/link";
-import { LogoutButton } from "./LogoutButton";
 import { Sidebar } from "./Sidebar";
 import { StarfieldBackground } from "./StarfieldBackground";
 import "./globals.css";
@@ -25,9 +24,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/upload" className="brand">
                 404 URL Recovery
               </Link>
-            </div>
-            <div className="topbar-actions">
-              <LogoutButton />
             </div>
           </header>
           <div className="app-body">

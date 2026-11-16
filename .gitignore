@@ -21,3 +21,10 @@ npm-debug.log*
 
 # Local-dev storage fallback (lib/localStore.ts) — stands in for Blob/Redis
 .local-data/
+
+.vercel
+.env*
+
+# Agent skills cache
+.agents/
+skills-lock.json

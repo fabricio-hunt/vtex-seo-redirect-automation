@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getJob } from "@/lib/kv";
+import { getJob } from "@/lib/jobStore";
 import { computeProgress } from "@/lib/progress";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
@@ -16,7 +16,7 @@ export async function GET(_request: Request, { params }: { params: Promise<{ id:
     config: job.config,
     status: job.status,
     error: job.error,
-    resultUrls: job.resultUrls,
+    resultFiles: job.resultFiles,
     stats: job.stats,
     progress: computeProgress(job.state),
   });

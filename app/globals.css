@@ -100,21 +100,6 @@ code,
   color: var(--foreground-subtle);
 }
 
-.topbar-actions {
-  display: flex;
-  align-items: center;
-  gap: 16px;
-}
-
-.topbar-actions a {
-  color: var(--foreground-muted);
-  font-size: 13px;
-}
-
-.topbar-actions a:hover {
-  color: var(--foreground);
-}
-
 .app-body {
   display: flex;
   align-items: stretch;

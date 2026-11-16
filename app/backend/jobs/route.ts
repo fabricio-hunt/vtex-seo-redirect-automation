@@ -1,11 +1,8 @@
 import { randomUUID } from "crypto";
 import { NextResponse } from "next/server";
-import { uploadJobInput } from "@/lib/blob";
-import { addToHistory, getJob, listRecentJobIds, saveJob } from "@/lib/kv";
+import { addToHistory, getJob, listRecentJobIds, saveJob, uploadJobInput } from "@/lib/jobStore";
 import { loadInput } from "@/lib/pythonCompute";
 import { DEFAULT_CONFIG, JobRecord, JobState, RecoveryConfig, UserConfigInput } from "@/lib/types";
-
-export const maxDuration = 60;
 
 function buildConfig(input: UserConfigInput): RecoveryConfig {
   return {
@@ -86,7 +83,7 @@ export async function GET(request: Request) {
       config: job.config,
       status: job.status,
       error: job.error,
-      resultUrls: job.resultUrls,
+      resultFiles: job.resultFiles,
       stats: job.stats,
     }));
 

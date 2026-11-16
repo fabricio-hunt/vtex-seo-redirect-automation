@@ -1,17 +1,17 @@
 {
   "name": "vtex-seo-redirect-automation",
   "version": "1.0.0",
-  "description": "Upload UI, job runner and history for the 404 URL recovery tool.",
+  "description": "Local-only upload UI, job runner and history for the 404 URL recovery tool.",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -H 127.0.0.1",
     "build": "next build",
-    "start": "next start"
+    "start": "next start -H 127.0.0.1",
+    "local": "next build && node scripts/start-local.mjs",
+    "local:dev": "node scripts/start-local.mjs --dev"
   },
   "license": "UNLICENSED",
   "dependencies": {
-    "@upstash/redis": "^1.38.3",
-    "@vercel/blob": "^2.8.0",
     "next": "^16.3.4",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"

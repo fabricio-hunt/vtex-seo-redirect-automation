@@ -8,7 +8,7 @@ def test_recovery_config_defaults_match_original_hardcoded_values():
     assert config.max_workers == 10
     assert config.http_timeout == 10
     assert config.base_domain == "https://www.bemol.com.br"
-    assert config.legacy_redirect == "/superoferta"
+    assert not hasattr(config, "legacy_redirect")
 
 
 def test_recovery_config_round_trips_through_dict():
@@ -31,3 +31,9 @@ def test_recovery_config_clamps_threshold_to_min_match_score():
     assert RecoveryConfig(threshold=50).threshold == MIN_MATCH_SCORE
     assert RecoveryConfig.from_dict({"threshold": 10}).threshold == MIN_MATCH_SCORE
     assert RecoveryConfig(threshold=95).threshold == 95
+
+
+def test_recovery_config_from_dict_ignores_unknown_fields():
+    """Job records saved before `legacy_redirect` was removed must still load."""
+    restored = RecoveryConfig.from_dict({"threshold": 85, "legacy_redirect": "/superoferta"})
+    assert restored.threshold == 85

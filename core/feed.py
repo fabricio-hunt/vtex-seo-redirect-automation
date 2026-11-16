@@ -1,13 +1,17 @@
 import logging
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
+from functools import cached_property
 from urllib.parse import urlparse
 
 import requests
 
+from .category import CategoryIndex, category_path_from_product_type
 from .text_utils import clean_text
 
 logger = logging.getLogger(__name__)
+
+GOOGLE_SHOPPING_NAMESPACE = "{http://base.google.com/ns/1.0}"
 
 
 def extract_slug(url: str) -> str:
@@ -28,32 +32,45 @@ def extract_slug(url: str) -> str:
 
 @dataclass
 class FeedIndex:
-    """Active URLs from the product feed, indexed by slug for matching."""
+    """Active URLs from the product feed, indexed by slug for matching.
+
+    `slug_to_category` maps each product slug to its category page path (derived from
+    `g:product_type`), used to redirect legacy Linx URLs to an equivalent category."""
 
     active_urls: list = field(default_factory=list)
     slug_to_url: dict = field(default_factory=dict)
+    slug_to_category: dict = field(default_factory=dict)
+
+    @cached_property
+    def category_index(self) -> CategoryIndex:
+        """Built lazily, once per feed, on the first legacy URL lookup."""
+        return CategoryIndex(self.slug_to_category)
 
 
 def parse_feed_xml(xml_source, max_items=None) -> FeedIndex:
     """Streams a Google Shopping XML feed (file-like object) into a FeedIndex."""
     index = FeedIndex()
-    namespace = ""
     count = 0
     try:
         context = ET.iterparse(xml_source, events=("end",))
         for _, elem in context:
-            tag_name = elem.tag.split("}")[-1] if "}" in elem.tag else elem.tag
-            if not namespace and "}" in elem.tag:
-                namespace = elem.tag.split("}")[0] + "}"
-
+            namespace, _, tag_name = elem.tag.rpartition("}")
             if tag_name in ("entry", "item"):
-                link_elem = elem.find(f"{namespace}link") if namespace else elem.find("link")
+                # `<link>` lives in the entry's own namespace (Atom for `<entry>`), which is
+                # not necessarily the namespace of the first element seen (e.g. `g:*`).
+                link_elem = elem.find(f"{namespace}}}link") if namespace else elem.find("link")
                 if link_elem is not None and link_elem.text:
                     url = link_elem.text
                     index.active_urls.append(url)
                     slug = extract_slug(url)
                     if slug:
                         index.slug_to_url[slug] = url
+                        product_type_elem = elem.find(f"{GOOGLE_SHOPPING_NAMESPACE}product_type")
+                        category_path = category_path_from_product_type(
+                            product_type_elem.text if product_type_elem is not None else ""
+                        )
+                        if category_path:
+                            index.slug_to_category[slug] = category_path
 
                 count += 1
                 elem.clear()

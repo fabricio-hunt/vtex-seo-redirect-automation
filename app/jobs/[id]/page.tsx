@@ -148,7 +148,7 @@ export default function JobPage({ params }: { params: Promise<{ id: string }> })
         </div>
       )}
 
-      {job.status === "done" && job.stats && job.resultUrls && (
+      {job.status === "done" && job.stats && job.resultFiles && (
         <>
           <div className="stat-grid">
             <div className="stat-tile">

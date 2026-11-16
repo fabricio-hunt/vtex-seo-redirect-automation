@@ -1,57 +1,26 @@
-import type { FeedCachePointer } from "./kv";
 import type { JobProgress, JobState, RecoveryConfig } from "./types";
 
 /**
- * Calls the stateless Python compute function (api/index.py). Both it and this
- * Next.js app are deployed together, so on Vercel they share a domain — see
- * `pythonApiBase()`. Locally, run the FastAPI app separately
- * (`uvicorn api.index:app --reload --port 8000`) or via `vercel dev`, which
- * proxies both under the same local origin.
+ * Calls the local Python compute API (api/index.py), started next to this app by
+ * scripts/start-local.mjs on 127.0.0.1:8000.
  */
 
-/**
- * In production, call through the project's production domain: per-deployment
- * URLs (VERCEL_URL) sit behind Vercel Deployment Protection and reject this
- * unauthenticated server-to-server call with 401. Preview deployments only have
- * a protected URL, so they rely on the automation bypass header below.
- */
 function pythonApiBase(): string {
-  if (process.env.PYTHON_API_BASE_URL) return process.env.PYTHON_API_BASE_URL;
-  if (process.env.VERCEL_ENV === "production" && process.env.VERCEL_PROJECT_PRODUCTION_URL) {
-    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`;
-  }
-  if (process.env.VERCEL_URL) return `https://${process.env.VERCEL_URL}`;
-  return "http://localhost:8000";
-}
-
-/** Set automatically once "Protection Bypass for Automation" is enabled on the project. */
-function deploymentProtectionHeaders(): Record<string, string> {
-  const bypassSecret = process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
-  return bypassSecret ? { "x-vercel-protection-bypass": bypassSecret } : {};
+  return process.env.PYTHON_API_BASE_URL || "http://127.0.0.1:8000";
 }
 
 /**
- * Kept below the calling routes' `maxDuration` (60s): if the compute call hangs, the route
- * still gets to record the failure and answer with JSON, instead of being killed by the
- * platform and returning Vercel's plain-text error page to the browser.
+ * Generous because nothing caps request duration locally; the first feed download (tens of
+ * MB) is the slowest call. Still bounded so a hung compute call surfaces as a job error.
  */
-const COMPUTE_TIMEOUT_MS = 50_000;
+const COMPUTE_TIMEOUT_MS = 5 * 60_000;
 
 async function callCompute<T>(path: string, body: unknown): Promise<T> {
-  const token = process.env.INTERNAL_API_TOKEN;
-  if (!token) {
-    throw new Error("INTERNAL_API_TOKEN is not configured on the server.");
-  }
-
   let response: Response;
   try {
     response = await fetch(`${pythonApiBase()}${path}`, {
       method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-internal-token": token,
-        ...deploymentProtectionHeaders(),
-      },
+      headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
       signal: AbortSignal.timeout(COMPUTE_TIMEOUT_MS),
     });
@@ -59,7 +28,7 @@ async function callCompute<T>(path: string, body: unknown): Promise<T> {
     if (error instanceof DOMException && error.name === "TimeoutError") {
       throw new Error(`Compute call ${path} timed out after ${COMPUTE_TIMEOUT_MS / 1000}s.`);
     }
-    throw error;
+    throw new Error(`Compute API unreachable at ${pythonApiBase()} (${path}): ${error instanceof Error ? error.message : error}`);
   }
 
   if (!response.ok) {
@@ -74,28 +43,23 @@ export async function loadInput(filename: string, contentBase64: string): Promis
   return callCompute("/api/compute/load-input", { filename, content_base64: contentBase64 });
 }
 
-export async function parseFeed(xmlUrl: string): Promise<{ slug_to_url: Record<string, string>; active_url_count: number }> {
-  return callCompute("/api/compute/parse-feed", { xml_url: xmlUrl });
+/** Downloads and parses the feed unless the compute API already has a fresh cached copy. */
+export async function prepareFeed(xmlUrl: string): Promise<{ active_url_count: number; cached_at: number }> {
+  return callCompute("/api/compute/prepare-feed", { xml_url: xmlUrl });
 }
 
 export async function matchBatch(
   state: JobState,
-  feedSnapshot: FeedCachePointer,
   config: RecoveryConfig,
-  batchSize = 150,
+  batchSize: number,
 ): Promise<{ state: JobState; progress: JobProgress }> {
-  return callCompute("/api/compute/match-batch", {
-    state,
-    feed_snapshot: { url: feedSnapshot.blobUrl, version: feedSnapshot.cachedAt },
-    config,
-    batch_size: batchSize,
-  });
+  return callCompute("/api/compute/match-batch", { state, config, batch_size: batchSize });
 }
 
 export async function httpCheckBatch(
   state: JobState,
   config: RecoveryConfig,
-  batchSize = 60,
+  batchSize: number,
 ): Promise<{ state: JobState; progress: JobProgress }> {
   return callCompute("/api/compute/http-check-batch", { state, config, batch_size: batchSize });
 }

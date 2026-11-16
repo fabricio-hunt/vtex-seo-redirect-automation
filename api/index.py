@@ -1,36 +1,33 @@
-"""Stateless compute endpoints backing the web UI.
+"""Local compute API backing the web UI.
 
-This function does the CPU/network-bound work (parsing the feed, fuzzy
-matching, HTTP verification) in small, bounded steps. It holds no state of
-its own: every request carries the current JobState and every response
-carries the updated one. Persistence (Vercel Blob for files, Vercel KV for
-job records) and orchestration across steps live in the Next.js backend
-(see lib/pythonCompute.ts), which is what the browser actually talks to.
+Does the CPU/network-bound work (parsing the feed, fuzzy matching, HTTP verification) in
+bounded steps so the UI can show progress. It holds no job state of its own: every request
+carries the current JobState and every response carries the updated one. Job persistence
+and orchestration across steps live in the Next.js app (see lib/pythonCompute.ts). The
+parsed feed is cached in memory and on disk (core/feed_cache.py).
+
+Meant to run only on the local machine, bound to 127.0.0.1 (see scripts/start-local.mjs).
 
 Kept deliberately separate from core/, which has no notion of "requests" —
 this module is just a thin JSON-in/JSON-out wrapper around it.
 """
 
 import base64
-import io
 import logging
 import os
 import subprocess
 import tempfile
 from datetime import datetime, timezone
-from functools import lru_cache
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
-import pandas as pd
-import requests
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import FastAPI, HTTPException
 
-from core.config import RecoveryConfig
-from core.export import build_result_frames
-from core.feed import FeedIndex, download_and_parse_xml
+from core.config import RecoveryConfig, feed_cache_ttl_seconds, local_data_dir
+from core.export import build_result_frames, dataframe_to_vtex_csv
+from core.feed_cache import CachedFeed, load_feed
 from core.pipeline import (
     JobState,
+    count_match_types,
     job_progress,
     load_input_urls,
     step_http_check_batch,
@@ -64,18 +61,6 @@ def _git_commit() -> Optional[str]:
 _WORKER_GIT_COMMIT = _git_commit()
 
 
-def require_internal_token(x_internal_token: Optional[str] = Header(default=None)) -> None:
-    """These endpoints do real network I/O against production infra (the feed, live URLs)
-    and are reachable directly (Next.js middleware does not cover Python functions), so they
-    require the same shared secret the Next.js backend uses when calling them."""
-    expected = os.environ.get("INTERNAL_API_TOKEN")
-    if not expected:
-        # Fail closed: an unset token means this deployment isn't configured for production use yet.
-        raise HTTPException(status_code=503, detail="INTERNAL_API_TOKEN is not configured on the server.")
-    if x_internal_token != expected:
-        raise HTTPException(status_code=401, detail="Invalid or missing X-Internal-Token header.")
-
-
 @app.get("/api/health")
 def health() -> dict:
     return {
@@ -96,37 +81,18 @@ def _state_from_payload(data: Dict[str, Any]) -> JobState:
     return JobState.from_dict(data)
 
 
-FEED_SNAPSHOT_TIMEOUT_SECONDS = 30
-
-
-@lru_cache(maxsize=2)
-def _load_feed_snapshot(url: str, version: int) -> FeedIndex:
-    """Downloads the slug -> URL snapshot the Next.js backend cached in Blob.
-
-    The snapshot is fetched here instead of being sent in the request body because it is
-    several MB and Vercel Functions reject bodies above 4.5 MB. Memoized per (url, version)
-    so a reused Fluid Compute instance downloads it once per feed refresh, not per batch;
-    `version` is part of the key because the local-dev store reuses the same URL."""
-    del version  # only part of the cache key
-    response = requests.get(url, timeout=FEED_SNAPSHOT_TIMEOUT_SECONDS)
-    response.raise_for_status()
-    return FeedIndex(slug_to_url=response.json())
-
-
-def _feed_from_payload(data: Dict[str, Any]) -> FeedIndex:
-    url = str(data.get("url", ""))
-    if urlparse(url).scheme not in ("http", "https"):
-        raise HTTPException(status_code=400, detail="feed_snapshot.url must be an http(s) URL.")
+def _load_cached_feed(xml_url: Optional[str]) -> CachedFeed:
+    url = xml_url or RecoveryConfig().xml_url
     try:
-        return _load_feed_snapshot(url, int(data.get("version", 0)))
-    except requests.RequestException as exc:
-        logger.error("Failed to download feed snapshot from %s: %s", url, exc)
-        raise HTTPException(status_code=502, detail=f"Falha ao baixar o cache do feed: {exc}") from exc
+        return load_feed(url, os.path.join(local_data_dir(), "feed-cache"), feed_cache_ttl_seconds())
+    except Exception as exc:  # noqa: BLE001 - surfaced to the caller as a 502
+        logger.error("Failed to download/parse feed from %s: %s", url, exc)
+        raise HTTPException(status_code=502, detail=f"Falha ao baixar/processar o feed: {exc}") from exc
 
 
 # --- endpoints -------------------------------------------------------------
 
-@app.post("/api/compute/load-input", dependencies=[Depends(require_internal_token)])
+@app.post("/api/compute/load-input")
 def load_input(payload: Dict[str, Any]) -> dict:
     """Decodes an uploaded spreadsheet (.csv or .xlsx) and returns the list of 404 URLs."""
     filename = payload.get("filename", "input.csv")
@@ -149,34 +115,27 @@ def load_input(payload: Dict[str, Any]) -> dict:
     return {"rows": rows}
 
 
-@app.post("/api/compute/parse-feed", dependencies=[Depends(require_internal_token)])
-def parse_feed(payload: Dict[str, Any]) -> dict:
-    """Downloads and parses the Google Shopping XML feed. This is the slowest single step
-    (feed is tens of MB) — the Next.js backend caches its result and only calls this again
-    once the cache expires."""
-    xml_url = payload.get("xml_url") or RecoveryConfig().xml_url
-    try:
-        feed = download_and_parse_xml(xml_url)
-    except Exception as exc:  # noqa: BLE001
-        logger.error("Failed to download/parse feed from %s: %s", xml_url, exc)
-        raise HTTPException(status_code=502, detail=f"Falha ao baixar/processar o feed: {exc}") from exc
-
-    return {"slug_to_url": feed.slug_to_url, "active_url_count": len(feed.active_urls)}
+@app.post("/api/compute/prepare-feed")
+def prepare_feed(payload: Dict[str, Any]) -> dict:
+    """Downloads and parses the feed unless a fresh cached copy exists. This is the slowest
+    single step (the feed is tens of MB), so the UI runs it on its own before matching."""
+    cached = _load_cached_feed(payload.get("xml_url"))
+    return {"active_url_count": len(cached.feed.slug_to_url), "cached_at": cached.cached_at}
 
 
-@app.post("/api/compute/match-batch", dependencies=[Depends(require_internal_token)])
+@app.post("/api/compute/match-batch")
 def match_batch(payload: Dict[str, Any]) -> dict:
-    """Matches up to `batch_size` pending rows against the feed snapshot at `feed_snapshot.url`."""
+    """Matches up to `batch_size` pending rows against the (cached) feed."""
     state = _state_from_payload(payload["state"])
-    feed = _feed_from_payload(payload["feed_snapshot"])
     config = _config_from_payload(payload.get("config"))
+    feed = _load_cached_feed(config.xml_url).feed
     batch_size = int(payload.get("batch_size", 100))
 
     state = step_match_batch(state, feed, config, batch_size)
     return {"state": state.to_dict(), "progress": job_progress(state)}
 
 
-@app.post("/api/compute/http-check-batch", dependencies=[Depends(require_internal_token)])
+@app.post("/api/compute/http-check-batch")
 def http_check_batch(payload: Dict[str, Any]) -> dict:
     """Verifies HTTP status for up to `batch_size` pending unique destination URLs."""
     state = _state_from_payload(payload["state"])
@@ -187,7 +146,7 @@ def http_check_batch(payload: Dict[str, Any]) -> dict:
     return {"state": state.to_dict(), "progress": job_progress(state)}
 
 
-@app.post("/api/compute/finalize", dependencies=[Depends(require_internal_token)])
+@app.post("/api/compute/finalize")
 def finalize(payload: Dict[str, Any]) -> dict:
     """Builds the two output CSVs (as text) once a job has reached the done phase."""
     state = _state_from_payload(payload["state"])
@@ -198,23 +157,12 @@ def finalize(payload: Dict[str, Any]) -> dict:
 
     final_df, review_df = build_result_frames(state.results, config.check_http_status)
 
-    def to_csv_text(df: pd.DataFrame) -> str:
-        buf = io.StringIO()
-        df.to_csv(buf, sep=";", index=False)
-        # Leading BOM so Excel opens the file with correct accented characters, matching
-        # the encoding='utf-8-sig' behaviour of the original script's direct-to-file writes.
-        return "﻿" + buf.getvalue()
-
-    match_counts: Dict[str, int] = {}
-    for row in state.results:
-        match_counts[row["match_type"]] = match_counts.get(row["match_type"], 0) + 1
-
     return {
-        "redirects_csv": to_csv_text(final_df),
-        "review_csv": to_csv_text(review_df),
+        "redirects_csv": dataframe_to_vtex_csv(final_df),
+        "review_csv": dataframe_to_vtex_csv(review_df),
         "stats": {
             "rows_total": len(state.rows),
             "valid_redirects": len(final_df),
-            "match_type_breakdown": match_counts,
+            "match_type_breakdown": count_match_types(state.results),
         },
     }

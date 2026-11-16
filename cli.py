@@ -3,13 +3,29 @@ import logging
 import os
 import sys
 
-from core.config import DEFAULT_XML_URL, RecoveryConfig
+from core.config import DEFAULT_XML_URL, RecoveryConfig, feed_cache_ttl_seconds, local_data_dir
+from core.feed_cache import load_feed
 from core.pipeline import process_404_list
+
+
+def default_input_path() -> str:
+    candidates = [
+        os.path.join("input", "2026-11-05_coverage", "Tabela.csv"),
+        os.path.join("input", "Tabela.csv"),
+    ]
+    for c in candidates:
+        if os.path.exists(c):
+            return c
+    if os.path.isdir("input"):
+        for root, _, files in os.walk("input"):
+            if "Tabela.csv" in files:
+                return os.path.join(root, "Tabela.csv")
+    return os.path.join("input", "Tabela.csv")
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Match 404 URLs to active product pages and generate VTEX redirects.")
-    parser.add_argument("--input", default="404-gsc/Tabela.csv", help="Path to the 404 report (.csv or .xlsx).")
+    parser.add_argument("--input", default=default_input_path(), help="Path to the 404 report (.csv or .xlsx).")
     parser.add_argument("--output-dir", default="output", help="Directory to write redirects.csv / redirects_review.csv into.")
     parser.add_argument("--xml-url", default=DEFAULT_XML_URL, help="Google Shopping XML feed URL.")
     parser.add_argument("--threshold", type=int, default=90, help="Minimum fuzzy match score (0-100) to accept a match.")
@@ -37,8 +53,9 @@ def main(argv=None) -> int:
         max_workers=args.max_workers,
     )
 
+    feed = load_feed(config.xml_url, os.path.join(local_data_dir(), "feed-cache"), feed_cache_ttl_seconds()).feed
     output_file = os.path.join(args.output_dir, "redirects.csv")
-    process_404_list(args.input, output_file, config=config)
+    process_404_list(args.input, output_file, config=config, feed=feed)
     return 0
 
 

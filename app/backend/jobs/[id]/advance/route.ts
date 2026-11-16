@@ -1,20 +1,14 @@
 import { NextResponse } from "next/server";
-import { uploadJobResult } from "@/lib/blob";
-import { getFreshFeedSnapshot, refreshFeedSnapshot } from "@/lib/feedCache";
-import { getJob, saveJob } from "@/lib/kv";
+import { getJob, saveJob, uploadJobResult } from "@/lib/jobStore";
 import { computeProgress } from "@/lib/progress";
-import { finalize as finalizeCompute, httpCheckBatch, matchBatch } from "@/lib/pythonCompute";
+import { finalize as finalizeCompute, httpCheckBatch, matchBatch, prepareFeed } from "@/lib/pythonCompute";
 
-const MATCH_BATCH_SIZE = 150;
-// Worst case per batch is ceil(batch / max_workers) rounds of `http_timeout` (10 workers,
-// 10s by default): 20 URLs -> 2 rounds -> ~20s, leaving headroom under maxDuration even
-// when the target site is slow. 60 URLs allowed 6 rounds -> ~60s and got the route killed.
-const HTTP_CHECK_BATCH_SIZE = 20;
-
-// Upper bound; the actual cap is whatever the Vercel plan in use allows (e.g. Hobby caps
-// lower than this). Each invocation does exactly one bounded unit of work (a feed refresh,
-// a matching batch or an HTTP-check batch) so it stays well under this regardless.
-export const maxDuration = 60;
+// Each call does one bounded unit of work (feed preparation, a matching batch or an
+// HTTP-check batch) so the job page can show progress between calls.
+const MATCH_BATCH_SIZE = 1000;
+// Worst case per batch is ceil(batch / max_workers) rounds of `http_timeout`
+// (10 workers, 10s by default): 100 URLs -> ~100s, well under the compute call timeout.
+const HTTP_CHECK_BATCH_SIZE = 100;
 
 export async function POST(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
@@ -28,13 +22,13 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
   try {
     if (job.state.phase === "matching") {
-      const feedSnapshot = await getFreshFeedSnapshot();
-      if (feedSnapshot) {
-        const { state } = await matchBatch(job.state, feedSnapshot, job.config, MATCH_BATCH_SIZE);
+      if (job.feedPreparedAt) {
+        const { state } = await matchBatch(job.state, job.config, MATCH_BATCH_SIZE);
         job.state = state;
       } else {
-        // Refreshing the feed is a step of its own; the next advance call does the matching.
-        await refreshFeedSnapshot(job.config.xml_url);
+        // Downloading the feed is a step of its own; the next advance call does the matching.
+        await prepareFeed(job.config.xml_url);
+        job.feedPreparedAt = new Date().toISOString();
       }
     } else if (job.state.phase === "http_check") {
       const { state } = await httpCheckBatch(job.state, job.config, HTTP_CHECK_BATCH_SIZE);
@@ -43,11 +37,11 @@ export async function POST(_request: Request, { params }: { params: Promise<{ id
 
     if (job.state.phase === "done") {
       const result = await finalizeCompute(job.state, job.config);
-      const [redirectsUrl, reviewUrl] = await Promise.all([
+      const [redirectsFile, reviewFile] = await Promise.all([
         uploadJobResult(id, "redirects.csv", result.redirects_csv),
         uploadJobResult(id, "review.csv", result.review_csv),
       ]);
-      job.resultUrls = { redirects: redirectsUrl, review: reviewUrl };
+      job.resultFiles = { redirects: redirectsFile, review: reviewFile };
       job.stats = result.stats;
       job.status = "done";
     }

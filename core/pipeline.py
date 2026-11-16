@@ -1,22 +1,24 @@
 import logging
 from collections import Counter
 from dataclasses import dataclass, field
-from urllib.parse import urlparse
 
 import pandas as pd
 
 from .config import RecoveryConfig
 from .export import build_result_frames, write_outputs
-from .feed import FeedIndex, download_and_parse_xml, extract_slug
+from .feed import FeedIndex, download_and_parse_xml
 from .http_check import check_urls_batch
-from .matching import is_linx_legacy, is_same_product_variant, is_same_url
-from .text_utils import clean_text
+from .matching import match_single_url
 
 logger = logging.getLogger(__name__)
 
+PHASE_MATCHING = "matching"
+PHASE_HTTP_CHECK = "http_check"
+PHASE_DONE = "done"
+
 
 def load_input_urls(input_file: str) -> list:
-    """Reads the 404 spreadsheet (.xlsx or .csv) and returns the list of URLs to recover."""
+    """Reads 404 URLs from a .csv or .xlsx spreadsheet."""
     if input_file.endswith(".xlsx"):
         df = pd.read_excel(input_file)
     else:
@@ -26,53 +28,17 @@ def load_input_urls(input_file: str) -> list:
 
 
 def match_row(url_404: str, feed: FeedIndex, config: RecoveryConfig) -> dict:
-    """Applies the matching rules (Legacy Linx -> Exact Slug -> Fuzzy Slug) to a single 404 URL.
-    Does not perform HTTP verification; `status_code` is filled in afterwards.
+    """Matches a 404 URL using the rule chain defined in core.matching."""
+    return match_single_url(url_404, feed, config)
 
-    Every result carries a `match_score` (0-100) so the export layer can enforce a single,
-    consistent accuracy floor (`RecoveryConfig.MIN_MATCH_SCORE`) across all match types,
-    and a self-redirect (`from` == `to`) never reaches the final diagnostic."""
-    url_404 = clean_text(str(url_404).strip())
-    if not url_404.startswith("http"):
-        url_404 = config.base_domain + (url_404 if url_404.startswith("/") else "/" + url_404)
-    path_404 = urlparse(url_404).path
 
-    def _result(dest_path: str, match_type: str, score: int) -> dict:
-        if dest_path and is_same_url(path_404, dest_path):
-            return {
-                "from": path_404, "to": "", "type": "PERMANENT", "endDate": "",
-                "match_type": "Same_URL_Ignored", "match_score": score,
-            }
-        return {
-            "from": path_404, "to": dest_path, "type": "PERMANENT", "endDate": "",
-            "match_type": match_type, "match_score": score,
-        }
-
-    if is_linx_legacy(path_404):
-        return _result(config.legacy_redirect, "Legacy_Linx", 100)
-
-    slug_404 = extract_slug(url_404)
-    if slug_404 in feed.slug_to_url:
-        dest_path = urlparse(clean_text(feed.slug_to_url[slug_404])).path
-        return _result(dest_path, "Exact_Slug", 100)
-
-    if slug_404 and feed.slug_to_url:
-        from rapidfuzz import fuzz, process
-
-        match = process.extractOne(slug_404, list(feed.slug_to_url.keys()), scorer=fuzz.ratio)
-        if match is not None:
-            best_match, score = match[0], round(match[1])
-            # config.threshold is already clamped to >= MIN_MATCH_SCORE (see RecoveryConfig).
-            if score >= config.threshold and is_same_product_variant(slug_404, best_match):
-                dest_path = urlparse(clean_text(feed.slug_to_url[best_match])).path
-                return _result(dest_path, f"Fuzzy_{score}%", score)
-
-    return {"from": path_404, "to": "", "type": "PERMANENT", "endDate": "", "match_type": "No_Match", "match_score": 0}
+def count_match_types(results: list) -> dict:
+    """Aggregates frequency count per match_type across a result set."""
+    return dict(Counter(r.get("match_type", "") for r in results))
 
 
 def process_404_list(input_file: str, output_file: str, config: RecoveryConfig = None, feed: FeedIndex = None):
-    """Full, synchronous pipeline (used by the CLI): matches every row, then verifies HTTP
-    status of every unique destination, then writes redirects.csv + redirects_review.csv."""
+    """Full synchronous pipeline: match, concurrent HTTP verify, and export CSVs."""
     config = config or RecoveryConfig()
     feed = feed if feed is not None else download_and_parse_xml(config.xml_url)
 
@@ -82,7 +48,7 @@ def process_404_list(input_file: str, output_file: str, config: RecoveryConfig =
 
     if config.check_http_status:
         unique_to_urls = list({r["to"] for r in results if r["to"]})
-        logger.info("Verificando status HTTP para %d URLs de destino únicas...", len(unique_to_urls))
+        logger.info("Verificando status HTTP para %d URLs de destino...", len(unique_to_urls))
         status_by_url = check_urls_batch(
             unique_to_urls, config.base_domain, config.user_agent, config.http_timeout, config.max_workers, cache={},
         )
@@ -94,18 +60,6 @@ def process_404_list(input_file: str, output_file: str, config: RecoveryConfig =
 
     final_df, review_df = build_result_frames(results, config.check_http_status)
     return write_outputs(final_df, review_df, output_file)
-
-
-# ---------------------------------------------------------------------------
-# Resumable / batched execution, for environments where a single invocation
-# can't run the whole pipeline in one shot (e.g. short-timeout serverless
-# functions). Each step processes a bounded amount of work and returns an
-# updated, JSON-serializable JobState.
-# ---------------------------------------------------------------------------
-
-PHASE_MATCHING = "matching"
-PHASE_HTTP_CHECK = "http_check"
-PHASE_DONE = "done"
 
 
 @dataclass
@@ -135,13 +89,10 @@ class JobState:
 
 
 def start_job(rows: list) -> JobState:
-    """Creates the initial JobState for a list of 404 URLs (before any matching happens)."""
     return JobState(rows=list(rows))
 
 
 def step_match_batch(state: JobState, feed: FeedIndex, config: RecoveryConfig, batch_size: int) -> JobState:
-    """Matches up to `batch_size` pending rows. Advances to the http_check (or done) phase
-    once every row has been matched."""
     assert state.phase == PHASE_MATCHING, f"step_match_batch called in phase {state.phase}"
 
     end = min(state.next_row_index + batch_size, len(state.rows))
@@ -162,8 +113,6 @@ def step_match_batch(state: JobState, feed: FeedIndex, config: RecoveryConfig, b
 
 
 def step_http_check_batch(state: JobState, config: RecoveryConfig, batch_size: int) -> JobState:
-    """Verifies HTTP status for up to `batch_size` pending unique destination URLs. Advances
-    to the done phase (filling `status_code` on every result) once all have been checked."""
     assert state.phase == PHASE_HTTP_CHECK, f"step_http_check_batch called in phase {state.phase}"
 
     end = min(state.next_url_index + batch_size, len(state.unique_to_urls))
@@ -180,18 +129,16 @@ def step_http_check_batch(state: JobState, config: RecoveryConfig, batch_size: i
 
 
 def finalize_job(state: JobState, config: RecoveryConfig):
-    """Builds the final (redirects) and review DataFrames once a JobState reaches PHASE_DONE."""
     assert state.phase == PHASE_DONE, f"finalize_job called in phase {state.phase}"
     return build_result_frames(state.results, config.check_http_status)
 
 
 def job_progress(state: JobState) -> dict:
-    """A JSON-friendly progress/stats summary, suitable for a status-polling API response."""
     return {
         "phase": state.phase,
         "rows_total": len(state.rows),
         "rows_matched": state.next_row_index,
         "urls_total": len(state.unique_to_urls),
         "urls_checked": state.next_url_index,
-        "match_type_breakdown": dict(Counter(r["match_type"] for r in state.results)),
+        "match_type_breakdown": count_match_types(state.results),
     }
