@@ -8,6 +8,10 @@ Organize as exportações em subpastas com data e descrição:
 
 ```text
 input/
+├── 2026-11-16_coverage/
+│   ├── Gráfico.csv
+│   ├── Metadados.csv
+│   └── Tabela.csv
 ├── 2026-11-05_coverage/
 │   └── Tabela.csv
 ├── 2026-07-28_gsc/

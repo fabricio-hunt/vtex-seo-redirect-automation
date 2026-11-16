@@ -9,17 +9,12 @@ from core.pipeline import process_404_list
 
 
 def default_input_path() -> str:
-    candidates = [
-        os.path.join("input", "2026-11-05_coverage", "Tabela.csv"),
-        os.path.join("input", "Tabela.csv"),
-    ]
-    for c in candidates:
-        if os.path.exists(c):
-            return c
     if os.path.isdir("input"):
-        for root, _, files in os.walk("input"):
-            if "Tabela.csv" in files:
-                return os.path.join(root, "Tabela.csv")
+        subdirs = sorted(os.listdir("input"), reverse=True)
+        for sub in subdirs:
+            candidate = os.path.join("input", sub, "Tabela.csv")
+            if os.path.isfile(candidate):
+                return candidate
     return os.path.join("input", "Tabela.csv")
 
 
